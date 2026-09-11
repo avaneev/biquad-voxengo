@@ -30,7 +30,7 @@ int main()
 }
 ```
 
-When integrating this design code into your code make sure you are
-correctly treating `a` and `b` coefficients. By convention introduced by
-the RBJ cookbook, `b` coefficents are `H(z)` numerator while `a`
-coefficients are denominator.
+When integrating this design code into your code make sure you are correctly
+treating the `a` and `b` coefficients. By convention introduced in the RBJ
+cookbook, `b` coefficients are `H(z)`'s numerator while `a` coefficients are
+its denominator.
