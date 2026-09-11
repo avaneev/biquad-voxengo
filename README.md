@@ -29,3 +29,8 @@ int main()
     cookBiquadVoxengo( BT_PEQ, 48000.0, 8000.0, 4, 1, &bq );
 }
 ```
+
+When integrating this design code into your code make sure you are
+correctly treating `a` and `b` coefficients. By convention introduced by
+the RBJ cookbook, `b` coefficents are `H(z)` numerator while `a`
+coefficients are denominator.
