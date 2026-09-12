@@ -18,6 +18,8 @@ The filters were verified in an actual equalizer plugin for correctness and
 stability. A notch filter can be designed as a "deep" bell filter, with the
 `Gain` parameter set to `1e-6` and `BW` multiplied by `1e-3`.
 
+[Explore the design in your browser](https://avaneev.github.io/biquad-voxengo/)
+
 ## Usage
 
 ```c
