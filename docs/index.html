@@ -12,7 +12,7 @@
   color-scheme:dark;
   --bg:#0f0e0c; --bg2:#141210; --line:#282219; --frame:#332c21;
   --ink:#ede6d6; --mut:#93896f; --dim:#5c5340;
-  --amber:#f2a33c; --teal:#5fb3a6;
+  --amber:#f2a33c; --teal:#5fb3a6; --cmp:#a99be8;
   --mono:"IBM Plex Mono",ui-monospace,monospace;
   --sans:"Space Grotesk",sans-serif;
 }
@@ -144,9 +144,11 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
       <b>NOTCH</b> = bell design with Gain 1e-6 (−120 dB) and BW×10⁻³. A bell's BW
       parameter is the width at half depth (−60 dB here), so ×1/√gain maps the
       control to the notch's −3 dB bandwidth (drawn on the plot).<br>
-      <b>PHASE</b> of a bell is a bounded antisymmetric bump (≈0° at Fc); its peak
-      scales with gain — see min/max readout in the phase panel.<br>
-      design: cookBiquadVoxengo — A. Vaneev / Voxengo, MIT.
+      <b>COMPARE</b> · all three designs use the same recipe — for the notch too
+      (Gain 1e-6, BW×1e-3). ANALOG = s-domain prototype H_a(j2πf), bandlimited to
+      fs/2. RBJ = Audio EQ Cookbook biquad, A=√G, Q=1/(2·sinh(ln2·BW/2)); its BW
+      convention (½-dB-gain width) matches the design's. Differences visible in
+      the overlay are pure design error (bilinear warp near Nyquist). Dashed.
     </div>
   </aside>
   <section id="stage">
@@ -163,8 +165,14 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
 const $=s=>document.querySelector(s);
 const COL={grid:'rgba(237,230,214,0.055)',gridMin:'rgba(237,230,214,0.035)',grid0:'rgba(237,230,214,0.17)',
   frame:'#332c21',ink:'#ede6d6',mut:'#93896f',dim:'#5c5340',amber:'#f2a33c',
-  amberFill:'rgba(242,163,60,0.05)',teal:'#5fb3a6',cross:'rgba(237,230,214,0.3)'};
-const fm=(v,d)=>{const s=v.toFixed(d);return s[0]==='-'?'\u2212'+s.slice(1):s;};
+  amberFill:'rgba(242,163,60,0.05)',teal:'#5fb3a6',cmp:'#a99be8',cross:'rgba(237,230,214,0.3)'};
+/* formatter: values that would round to zero are snapped to exact zero first —
+   kills the "-0.00"/"0.00" readout flicker near a 0 dB peak or 0° crossing */
+const fm=(v,d)=>{
+  if(Math.abs(v)<0.5/Math.pow(10,d))v=0;
+  const s=v.toFixed(d);
+  return s[0]==='-'?'\u2212'+s.slice(1):s;
+};
 
 /* ================= 1 · filter design — faithful JS port of cookBiquadVoxengo ================= */
 const BT_PEQ=0, BT_BPF=1;
@@ -202,8 +210,38 @@ function cookBiquadVoxengo(type,SampleRate,Freq,Gain,BW){
 const btOf=t=>t===1?BT_BPF:BT_PEQ;
 const NOTCH_GAIN=1e-6, NOTCH_BW_K=1e-3;             // Gain=1e-6 · BW×1e-3
 
+/* ---- comparison references (apples to apples: the notch is a deep bell in
+   every design — Gain=1e-6, BW×1e-3; no true-zero notch is compared) --------
+   kind: 0 bell (also serves the notch) · 1 band-pass                        */
+function evalAnalog(kind,f,fC,G,bw){                 /* H_a(j2πf), bandlimited ref */
+  const w=2*Math.PI*f, w0=2*Math.PI*fC;
+  let nr,ni,dr,di;
+  if(kind===1){                                      /* (ω0/Q)s / (s²+(ω0/Q)s+ω0²) */
+    const bp=w0*2*Math.sinh(Math.LN2*bw/2)*w;        /* ω0/Q = ω0·2·sinh(ln2·BW/2) */
+    nr=0;ni=bp;dr=w0*w0-w*w;di=bp;
+  }else{                                             /* bell: Qz=Qp/G, half-depth width BW */
+    const Qp=Math.pow(2,bw*0.5)*Math.sqrt(G)/(Math.pow(2,bw)-1);
+    const cz=w0*w0-w*w;
+    nr=cz;ni=(w0*G/Qp)*w;dr=cz;di=(w0/Qp)*w;         /* 1/Qz = G/Qp */
+  }
+  return[20*Math.log10(Math.max(Math.sqrt((nr*nr+ni*ni)/(dr*dr+di*di)),1e-9)),
+         Math.atan2(ni,nr)-Math.atan2(di,dr)];
+}
+function rbjCoeffs(kind,fC,G,bw,fs){                 /* Audio EQ Cookbook */
+  const w0=2*Math.PI*Math.min(fC/fs,0.4999999);
+  const Q=1/(2*Math.sinh(Math.LN2*bw/2));            /* ½-dB-gain octave width —
+                                                        matches the design's BW convention */
+  const cs=Math.cos(w0), al=Math.sin(w0)/(2*Q);
+  if(kind===0){                                      /* peaking EQ, A=√G — also the
+                                                        notch: G=1e-6, BW×1e-3 */
+    const A=Math.sqrt(G);
+    return{b0:1+al*A,b1:-2*cs,b2:1-al*A,a0:1+al/A,a1:-2*cs,a2:1-al/A};
+  }
+  return{b0:al,b1:0,b2:-al,a0:1+al,a1:-2*cs,a2:1-al};/* BPF, 0 dB peak */
+}
+
 /* ================= 2 · state ================= */
-const ui={type:0,freq:1000,gainDB:6,bw:1.0,fs:48000,span:0};
+const ui={type:0,freq:1000,gainDB:6,bw:1.0,fs:48000,span:0,cmp:0};
 /* chased ("displayed") state — the curve morphs by easing these toward ui targets */
 const ch={logF:Math.log2(140),gdb:-16,logBW:Math.log2(2.6),fs:48000,mix:1,tA:0,tB:0};
 const rng={mLo:-24,mHi:12,pLo:-90,pHi:45};
@@ -231,19 +269,40 @@ function stickyStep(cur,span,steps,maxN){
   return cur||fit;
 }
 const grid={ms:0,ps:0};
+/* canvas-drawn COMPARE caption: hit rects rebuilt each frame, read by handlers */
+const cmpHits=[];let cmpHover=-1;
 
 /* ================= 3 · response sampling ================= */
 const NPTS=900,MAXP=NPTS+26;
 const F=new Float64Array(MAXP),db=new Float64Array(MAXP),ph=new Float64Array(MAXP);
 const dA=new Float64Array(MAXP),pA=new Float64Array(MAXP),dBf=new Float64Array(MAXP),pBf=new Float64Array(MAXP);
-let nF=0,curCA=null,curCB=null,curBlend=1,fAnchor=1000,phMn=0,phMx=0;
+const cdb=new Float64Array(MAXP),cph=new Float64Array(MAXP);      /* compare curves */
+let nF=0,curCA=null,curCB=null,curBlend=1,fAnchor=1000,phMn=0,phMx=0,cmpOn=false;
 
-function unwrap(a,n){ /* continuous (unwrapped) phase along the sweep */
-  for(let i=1;i<n;i++){
-    let d=a[i]-a[i-1];
-    while(d>Math.PI)d-=2*Math.PI;
-    while(d<-Math.PI)d+=2*Math.PI;
-    a[i]=a[i-1]+d;
+/* Null-aware phase unwrap. No compared design has a true unit-circle zero
+   anymore (floors sit at −120 dB), so the singular-sample path is now a
+   no-op — retained as cheap robustness against numerical deep dips. */
+const NULL_DB=-150;
+function unwrap(dbA,phA,n){
+  let f0=-1,l0=-1;
+  for(let i=0;i<n;i++)if(dbA[i]>NULL_DB){if(f0<0)f0=i;l0=i;}
+  if(f0<0)return;
+  let lp=phA[f0],li=f0;
+  for(let i=f0+1;i<=l0;i++){
+    if(dbA[i]<=NULL_DB)continue;                 /* singular: fill later */
+    let mn=0;for(let k=li;k<=i;k++)if(dbA[k]<mn)mn=dbA[k];
+    const T=mn<-60?1.7*Math.PI:Math.PI;          /* relaxed across a null dip */
+    let d=phA[i]-lp;
+    while(d>T)d-=2*Math.PI;
+    while(d<-T)d+=2*Math.PI;
+    lp+=d;phA[i]=lp;li=i;
+  }
+  for(let i=f0;i<=l0;i++){                       /* interpolate singular samples */
+    if(dbA[i]>NULL_DB)continue;
+    let a=i-1;while(a>f0&&dbA[a]<=NULL_DB)a--;
+    let b=i+1;while(b<l0&&dbA[b]<=NULL_DB)b++;
+    const va=dbA[a]>NULL_DB,vb=dbA[b]>NULL_DB;
+    phA[i]=va&&vb?phA[a]+(phA[b]-phA[a])*(i-a)/(b-a):va?phA[a]:phA[b];
   }
 }
 function evalAt(c,cw,c2,sw,s2){
@@ -293,9 +352,27 @@ function computeCurves(){
     else{db[i]=rB[0];ph[i]=rB[1];}
   }
   if(mix<1){
-    unwrap(pA,nF);unwrap(pBf,nF);
+    unwrap(dA,pA,nF);unwrap(dBf,pBf,nF);
     for(let i=0;i<nF;i++){db[i]=dA[i]+(dBf[i]-dA[i])*mix;ph[i]=pA[i]+(pBf[i]-pA[i])*mix;}
-  }else unwrap(ph,nF);
+  }else unwrap(db,ph,nF);
+  /* ---- comparison reference on the same grid, same chased parameters.
+     Identical recipe in every design: kind 0 (bell) serves the notch with
+     G=1e-6, BW×1e-3 — the exact parameters the main curve was designed with. */
+  cmpOn=ui.cmp!==0;
+  if(cmpOn){
+    const kind=btB===BT_BPF?1:0;
+    const cc=ui.cmp===2?rbjCoeffs(kind,fC,gLin,bw,fs):null;
+    for(let i=0;i<nF;i++){
+      const r=ui.cmp===1
+        ?evalAnalog(kind,F[i],fC,gLin,bw)
+        :(()=>{const w=2*Math.PI*F[i]/fs;
+           return evalAt(cc,Math.cos(w),Math.cos(2*w),Math.sin(w),Math.sin(2*w));})();
+      cdb[i]=r[0];cph[i]=r[1];
+    }
+    unwrap(cdb,cph,nF);
+    const k2=Math.round((ph[0]-cph[0])/(2*Math.PI)); /* align 360° branch to main */
+    if(k2)for(let i=0;i<nF;i++)cph[i]+=k2*2*Math.PI;
+  }
 }
 function sampleCurve(f){
   if(!nF)return null;
@@ -305,21 +382,40 @@ function sampleCurve(f){
   const t=(f-F[lo])/((F[hi]-F[lo])||1);
   return{db:db[lo]+(db[hi]-db[lo])*t,ph:ph[lo]+(ph[hi]-ph[lo])*t};
 }
-/* measured width (in octaves) of the curve at a given dB level, around fAnchor */
+function sampleCmp(f){
+  if(!nF||!cmpOn)return null;
+  f=Math.min(Math.max(f,F[0]),F[nF-1]);
+  let lo=0,hi=nF-1;
+  while(hi-lo>1){const m=(lo+hi)>>1;if(F[m]<f)lo=m;else hi=m;}
+  const t=(f-F[lo])/((F[hi]-F[lo])||1);
+  return{db:cdb[lo]+(cdb[hi]-cdb[lo])*t,ph:cph[lo]+(cph[hi]-cph[lo])*t};
+}
+/* width of the curve at a level around fAnchor. The anchor (the filter's
+   extremum) is always beyond the level, so a crossing always exists — but it
+   may lie OUTSIDE the visible window (wide BW in a zoomed view). Returns
+   {f1,f2,oct,clipL,clipR}: f1/f2 absent and oct null for clipped sides, so
+   the caller can fall back to the design BW instead of dropping the label. */
 function measureWidth(lvl){
+  if(!nF)return null;
   let lo=0,hi=nF-1;
   while(hi-lo>1){const m=(lo+hi)>>1;if(F[m]<fAnchor)lo=m;else hi=m;}
   const i0=lo;
   const above=db[i0]>lvl;
   let l=i0;while(l>0&&((db[l-1]>lvl)===above))l--;
-  if(l===0)return null;
+  const clipL=l===0;
   let r=i0;while(r<nF-1&&((db[r+1]>lvl)===above))r++;
-  if(r===nF-1)return null;
-  const tL=Math.min(Math.max((lvl-db[l])/((db[l-1]-db[l])||1e-9),0),1);
-  const tR=Math.min(Math.max((lvl-db[r])/((db[r+1]-db[r])||1e-9),0),1);
-  const xL=F[l]-(F[l]-F[l-1])*tL, xR=F[r]+(F[r+1]-F[r])*tR;
-  if(!(xR>xL))return null;
-  return{f1:xL,f2:xR,oct:Math.log2(xR/xL)};
+  const clipR=r===nF-1;
+  const st={clipL,clipR,oct:null};
+  if(!clipL){
+    const t=Math.min(Math.max((lvl-db[l])/((db[l-1]-db[l])||1e-9),0),1);
+    st.f1=F[l]-(F[l]-F[l-1])*t;
+  }
+  if(!clipR){
+    const t=Math.min(Math.max((lvl-db[r])/((db[r+1]-db[r])||1e-9),0),1);
+    st.f2=F[r]+(F[r+1]-F[r])*t;
+  }
+  if(!clipL&&!clipR&&st.f2>st.f1)st.oct=Math.log2(st.f2/st.f1);
+  return st;
 }
 
 /* ================= 4 · parameter chase + auto-ranging ================= */
@@ -336,11 +432,29 @@ function chase(dt){
   let mn=1e9,mx=-1e9,pn=1e9,px=-1e9;
   for(let i=0;i<nF;i++){const a=db[i],b=ph[i];
     if(a<mn)mn=a;if(a>mx)mx=a;if(b<pn)pn=b;if(b>px)px=b;}
+  if(cmpOn){ /* let the reference curve widen the frame, but keep a −120 dB floor
+                from stretching the magnitude axis without bound */
+    let mnC=1e9,mxC=-1e9,pnC=1e9,pxC=-1e9;
+    for(let i=0;i<nF;i++){const a=cdb[i],b=cph[i];
+      if(a<mnC)mnC=a;if(a>mxC)mxC=a;if(b<pnC)pnC=b;if(b>pxC)pxC=b;}
+    const sp=Math.max(mx-mn,0.5);
+    mn=Math.min(mn,Math.max(mnC,mn-Math.max(sp*0.2,3)));
+    mx=Math.max(mx,Math.min(mxC,mx+Math.max(sp*0.15,2)));
+    pn=Math.min(pn,pnC);px=Math.max(px,pxC);
+  }
   /* magnitude: smooth window hugging the data — pads proportional to the span,
      slightly heavier below (skirts) than above; edges never quantize → no snapping */
   const mspan=Math.max(mx-mn,0.5);
-  move(rng,'mLo',mn-Math.max(mspan*0.10,0.4),kr);
-  move(rng,'mHi',mx+Math.max(mspan*0.045,0.25),kr);
+  const mLoT=mn-Math.max(mspan*0.10,0.4);
+  let mHiT=mx+Math.max(mspan*0.045,0.25);
+  /* cap the 0 dB level: cuts/notches/BPF peak AT 0 dB, which would otherwise
+     ride up to ~2 px under the "MAGNITUDE / dB" caption. 0 dB may occupy at
+     most 80% of the axis — the remaining ≥20% of the panel stays as clear
+     headroom above it. Continuous in the data → no snapping at the threshold. */
+  const f0=(0-mLoT)/(mHiT-mLoT);
+  if(f0>0.80)mHiT=mLoT+(0-mLoT)/0.80;
+  move(rng,'mLo',mLoT,kr);
+  move(rng,'mHi',mHiT,kr);
   /* phase: smooth window. Bell bumps are antisymmetric → symmetric ±1.18×peak
      frame; otherwise proportional padding (BPF/notch sweeps). The window tracks
      the measured peak continuously, so it can never flap between two ranges. */
@@ -432,7 +546,8 @@ function drawPlot(){
     g.textAlign='right';g.fillStyle=COL.dim;
     g.fillText(fmaxD>=10000?(fmaxD/1000).toFixed(0)+'k':(fmaxD/1000).toFixed(1)+'k',PL+pw,pBot+16);
   }
-  /* frames + titles */
+  /* frames + captions, and the caption-style COMPARE switch (no box —
+     plain text options in the same typographic row, clickable) */
   g.strokeStyle=COL.frame;
   g.strokeRect(PL+0.5,mTop+0.5,pw-1,mBot-mTop-1);
   g.strokeRect(PL+0.5,pTop+0.5,pw-1,pBot-pTop-1);
@@ -440,7 +555,22 @@ function drawPlot(){
   g.textAlign='left';g.fillStyle=COL.dim;
   g.fillText('MAGNITUDE / dB',PL+10,mTop+16);
   g.fillText('PHASE / deg',PL+10,pTop+16);
+  cmpHits.length=0;
+  let cxx=PL+10+g.measureText('MAGNITUDE / dB').width+30;
+  g.fillText('COMPARE',cxx,mTop+16);
+  cxx+=g.measureText('COMPARE').width+12;
   g.letterSpacing='0px';
+  g.font='500 9px "IBM Plex Mono",monospace';
+  for(const opt of[['OFF',0],['ANALOG',1],['RBJ',2]]){
+    const wo=g.measureText(opt[0]).width,act=ui.cmp===opt[1],hov=cmpHover===opt[1];
+    g.fillStyle=act?(opt[1]?COL.cmp:COL.ink):(hov?COL.mut:COL.dim);
+    g.fillText(opt[0],cxx,mTop+16);
+    if(act)g.fillRect(cxx,mTop+19.5,wo,1);
+    cmpHits.push({x0:cxx-3,x1:cxx+wo+3,y0:mTop+4,y1:mTop+22,mode:opt[1]});
+    cxx+=wo+14;
+  }
+  /* hide the corner readout if the compare row leaves no room for it */
+  const showRO=(PL+pw-10-cxx)>175;
   /* dead zone beyond Nyquist: shaded, bounded, labeled — window stays centered */
   const xn=xF(fmaxD);
   if(xHi>fmaxD*1.0005&&xn<PL+pw-2){
@@ -460,17 +590,40 @@ function drawPlot(){
       g.letterSpacing='0px';g.restore();
     }
   }
-  /* live readout at cursor (or marker) — only where data exists */
+  /* compare reference: dashed, drawn beneath the solid curves, both panels */
+  if(cmpOn&&nF){
+    g.save();g.beginPath();g.rect(PL,mTop,pw,mBot-mTop);g.clip();
+    const pc=new Path2D();
+    for(let i=0;i<nF;i++){const x=xF(F[i]),y=yM(cdb[i]);i?pc.lineTo(x,y):pc.moveTo(x,y);}
+    g.setLineDash([5,4]);g.strokeStyle=COL.cmp;g.lineWidth=1.3;g.stroke(pc);g.setLineDash([]);
+    g.restore();
+    g.save();g.beginPath();g.rect(PL,pTop,pw,pBot-pTop);g.clip();
+    const pq=new Path2D();
+    for(let i=0;i<nF;i++){const x=xF(F[i]),y=yP(cph[i]);i?pq.lineTo(x,y):pq.moveTo(x,y);}
+    g.setLineDash([5,4]);g.strokeStyle=COL.cmp;g.lineWidth=1.3;g.stroke(pq);g.setLineDash([]);
+    g.restore();
+    const lt='\u00b7\u00b7\u00b7 '+(ui.cmp===1?'ANALOG':'RBJ');
+    g.font='500 8.5px "IBM Plex Mono",monospace';g.textAlign='left';
+    g.fillStyle='rgba(169,155,232,0.9)';g.fillText(lt,PL+10,mBot-7);
+    g.fillStyle='rgba(169,155,232,0.55)';g.fillText(lt,PL+10,pBot-7);
+  }
+  /* live readout at cursor (or marker) — main value, then compare value.
+     Suppressed entirely while the pointer rests on a COMPARE option. */
   const pdec2=(rng.pHi-rng.pLo)<20?2:1;
   const rf=hover.on?hover.f:fAnchor;
   const smp=rf<=fmaxD*1.0005?sampleCurve(rf):null;
-  if(smp){
+  if(smp&&showRO&&cmpHover<0){
+    const sc=cmpOn?sampleCmp(rf):null;
     g.font='500 10.5px "IBM Plex Mono",monospace';g.textAlign='right';
-    const ft=fmtHz(rf),tw=g.measureText(ft).width;
-    g.fillStyle=COL.dim;g.fillText(ft,PL+pw-10,mTop+16);
-    g.fillStyle=COL.amber;g.fillText(fm(smp.db,2)+' dB  ',PL+pw-10-tw,mTop+16);
-    g.fillStyle=COL.dim;g.fillText(ft,PL+pw-10,pTop+16);
-    g.fillStyle=COL.teal;g.fillText(fm(smp.ph,pdec2)+'\u00b0  ',PL+pw-10-tw,pTop+16);
+    let xr=PL+pw-10;
+    const putL=(txt,color,y)=>{g.fillStyle=color;g.fillText(txt,xr,y);xr-=g.measureText(txt).width+10;};
+    putL(fmtHz(rf),COL.dim,mTop+16);
+    putL(fm(smp.db,2)+' dB',COL.amber,mTop+16);
+    if(sc)putL(fm(sc.db,2)+' dB',COL.cmp,mTop+16);
+    xr=PL+pw-10;
+    putL(fmtHz(rf),COL.dim,pTop+16);
+    putL(fm(smp.ph,pdec2)+'\u00b0',COL.teal,pTop+16);
+    if(sc)putL(fm(sc.ph,pdec2)+'\u00b0',COL.cmp,pTop+16);
   }
   /* measured phase excursion — always visible, independent of hover */
   g.font='400 9px "IBM Plex Mono",monospace';g.textAlign='right';g.fillStyle=COL.dim;
@@ -489,54 +642,79 @@ function drawPlot(){
   for(let i=0;i<nF;i++){const x=xF(F[i]),y=yP(ph[i]);i?pp.lineTo(x,y):pp.moveTo(x,y);}
   g.strokeStyle=COL.teal;g.lineWidth=1.6;g.lineJoin='round';g.stroke(pp);
   g.restore();
-  /* measured design-bandwidth bracket: bell = width @ ½ gain · BPF/notch = −3 dB */
+  /* bandwidth specifier: measured width at ½ gain (bell) / −3 dB (BPF/notch),
+     CLIPPED to the panel. If the crossings fall outside the window (wide BW,
+     zoomed view) the bracket renders as a full-width line and the label falls
+     back to the design BW — the readout never disappears while adjusting. */
   if(curBlend>0.999){
     const lvl=ui.type===0?ui.gainDB/2:-3;
     const mw=measureWidth(lvl);
-    if(mw&&mw.oct>0.02&&mw.oct<11){
-      const x1=xF(mw.f1),x2=xF(mw.f2);
-      if(x1>PL-2&&x2<PL+pw+2){
-        const y=Math.round(yM(lvl))+0.5;
-        g.strokeStyle='rgba(242,163,60,0.45)';g.lineWidth=1;
-        g.beginPath();
-        g.moveTo(x1,y);g.lineTo(x2,y);
-        g.moveTo(x1+0.5,y-4);g.lineTo(x1+0.5,y+4);
-        g.moveTo(x2-0.5,y-4);g.lineTo(x2-0.5,y+4);
-        g.stroke();
+    if(mw){
+      const cx1=Math.max(mw.clipL?PL+1:xF(mw.f1),PL+1);
+      const cx2=Math.min(mw.clipR?PL+pw-1:xF(mw.f2),PL+pw-1);
+      const yv=yM(lvl),y=Math.round(yv)+0.5;
+      g.save();g.beginPath();g.rect(PL,mTop,pw,mBot-mTop);g.clip();
+      g.strokeStyle='rgba(242,163,60,0.45)';g.lineWidth=1;
+      g.beginPath();
+      g.moveTo(cx1,y);g.lineTo(cx2,y);
+      g.moveTo(cx1+0.5,y-4);g.lineTo(cx1+0.5,y+4);
+      g.moveTo(cx2-0.5,y-4);g.lineTo(cx2-0.5,y+4);
+      g.stroke();
+      g.restore();
+      if(yv>mTop+2&&yv<mBot-2){
+        const oct=mw.oct!=null?mw.oct:ui.bw;   /* clipped → design BW fallback */
         const ls=(lvl>0?'+':'\u2212')+(Math.abs(lvl)<10?Math.abs(lvl).toFixed(1):Math.round(Math.abs(lvl)));
-        const lbl=(mw.oct<10?mw.oct.toFixed(2):mw.oct.toFixed(1))+' oct @ '+ls+' dB';
+        const lbl=(oct<10?oct.toFixed(2):oct.toFixed(1))+' oct @ '+ls+' dB';
         g.font='500 9px "IBM Plex Mono",monospace';g.textAlign='center';
         g.fillStyle='rgba(242,163,60,0.8)';
-        const ly=y-mTop<26?y+15:y-7;
-        g.fillText(lbl,Math.min(Math.max((x1+x2)/2,PL+42),PL+pw-42),ly);
+        let ly=(yv-mTop<26)?yv+16:yv-7;        /* adaptive: below line near top */
+        if(ly<mTop+10)ly=yv+16;
+        if(ly>mBot-6)ly=yv-7;
+        const half=g.measureText(lbl).width/2+4;
+        g.fillText(lbl,Math.min(Math.max((cx1+cx2)/2,PL+half),PL+pw-half),ly);
       }
     }
   }
-  /* center-frequency marker */
+  /* center-frequency marker; label clamped so it can never cross the frame */
   const fC=fAnchor,xm=xF(fC);
   g.strokeStyle='rgba(242,163,60,0.32)';g.lineWidth=1;
   g.beginPath();g.moveTo(Math.round(xm)+0.5,mTop);g.lineTo(Math.round(xm)+0.5,pBot);g.stroke();
   g.fillStyle=COL.amber;g.beginPath();
   g.moveTo(xm-5,G.PT-11);g.lineTo(xm+5,G.PT-11);g.lineTo(xm,G.PT-4);g.closePath();g.fill();
   g.font='500 10px "IBM Plex Mono",monospace';
-  g.textAlign=xm>w-110?'right':'left';g.fillStyle=COL.mut;
-  g.fillText(fmtHz(fC),xm+(xm>w-110?-9:9),G.PT-4);
-  /* anchor dots on both curves */
+  const ftz=fmtHz(fC),fw=g.measureText(ftz).width;
+  if(xm>w-110){ /* right-align, but never let the text's left edge pass the frame */
+    g.textAlign='right';g.fillStyle=COL.mut;
+    g.fillText(ftz,Math.max(xm-9,PL+4+fw),G.PT-4);
+  }else{        /* left-align, but never let the text's right edge pass the frame */
+    g.textAlign='left';g.fillStyle=COL.mut;
+    g.fillText(ftz,Math.min(xm+9,PL+pw-4-fw),G.PT-4);
+  }
+  /* anchor dots — clipped to their panels so they can't escape mid-animation */
   const s0=sampleCurve(fC);
   if(s0){
+    g.save();g.beginPath();g.rect(PL,mTop,pw,mBot-mTop);g.clip();
     g.fillStyle=COL.amber;g.beginPath();g.arc(xF(fC),yM(s0.db),2.6,0,7);g.fill();
+    g.restore();
+    g.save();g.beginPath();g.rect(PL,pTop,pw,pBot-pTop);g.clip();
     g.fillStyle=COL.teal;g.beginPath();g.arc(xF(fC),yP(s0.ph),2.6,0,7);g.fill();
+    g.restore();
   }
-  /* crosshair */
+  /* crosshair; dots clipped like the anchor dots */
   if(hover.on){
-    const xh=xF(hover.f);
+    const xh=Math.min(Math.max(xF(hover.f),PL),PL+pw);
     g.strokeStyle=COL.cross;g.setLineDash([3,4]);g.lineWidth=1;
     g.beginPath();g.moveTo(Math.round(xh)+0.5,mTop);g.lineTo(Math.round(xh)+0.5,pBot);g.stroke();
     g.setLineDash([]);
-    if(smp){
+    if(smp&&cmpHover<0){
+      g.save();g.beginPath();g.rect(PL,mTop,pw,mBot-mTop);g.clip();
       g.strokeStyle=COL.ink;g.lineWidth=1;
       g.fillStyle=COL.amber;g.beginPath();g.arc(xh,yM(smp.db),3,0,7);g.fill();g.stroke();
+      g.restore();
+      g.save();g.beginPath();g.rect(PL,pTop,pw,pBot-pTop);g.clip();
+      g.strokeStyle=COL.ink;g.lineWidth=1;
       g.fillStyle=COL.teal;g.beginPath();g.arc(xh,yP(smp.ph),3,0,7);g.fill();g.stroke();
+      g.restore();
     }
   }
 }
@@ -669,7 +847,7 @@ PRE.forEach(p=>{
   $('#pre').appendChild(b);
 });
 
-/* ================= 9 · plot interaction: hover crosshair + click/drag scrub ================= */
+/* ================= 9 · plot interaction: hover, scrub, COMPARE caption hits ==== */
 const hover={on:false,f:1000};let drag=false;
 function xAt(e){
   const r=plot.getBoundingClientRect(),G=geoOf(r.width,r.height);
@@ -677,12 +855,26 @@ function xAt(e){
   return Math.exp(xlLo+t*(xlHi-xlLo));
 }
 const setFreq=f=>{ui.freq=Math.min(Math.max(f,FMIN),fmaxOf());syncFreq();};
-plot.addEventListener('pointerdown',e=>{drag=true;plot.setPointerCapture(e.pointerId);
-  plot.style.cursor='ew-resize';setFreq(xAt(e));e.preventDefault();});
-plot.addEventListener('pointermove',e=>{hover.on=true;hover.f=xAt(e);if(drag)setFreq(hover.f);});
-plot.addEventListener('pointerup',()=>{drag=false;plot.style.cursor='crosshair';});
-plot.addEventListener('pointercancel',()=>{drag=false;plot.style.cursor='crosshair';});
-plot.addEventListener('pointerleave',()=>{if(!drag)hover.on=false;});
+plot.addEventListener('pointerdown',e=>{
+  const r=plot.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  for(const ht of cmpHits)                            /* COMPARE caption click */
+    if(mx>=ht.x0&&mx<=ht.x1&&my>=ht.y0&&my<=ht.y1){ui.cmp=ht.mode;e.preventDefault();return;}
+  drag=true;plot.setPointerCapture(e.pointerId);
+  plot.style.cursor='ew-resize';setFreq(xAt(e));e.preventDefault();
+});
+plot.addEventListener('pointermove',e=>{
+  const r=plot.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  let over=false;
+  for(const ht of cmpHits)
+    if(mx>=ht.x0&&mx<=ht.x1&&my>=ht.y0&&my<=ht.y1){over=true;cmpHover=ht.mode;break;}
+  if(!over)cmpHover=-1;
+  hover.on=!over;hover.f=xAt(e);
+  plot.style.cursor=over?'pointer':(drag?'ew-resize':'crosshair');
+  if(drag&&!over)setFreq(hover.f);
+});
+plot.addEventListener('pointerup',()=>{drag=false;plot.style.cursor=cmpHover>=0?'pointer':'crosshair';});
+plot.addEventListener('pointercancel',()=>{drag=false;plot.style.cursor=cmpHover>=0?'pointer':'crosshair';});
+plot.addEventListener('pointerleave',()=>{if(!drag)hover.on=false;cmpHover=-1;});
 
 /* ================= 10 · main loop ================= */
 let last=performance.now();
