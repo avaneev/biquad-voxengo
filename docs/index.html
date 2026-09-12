@@ -97,6 +97,16 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
       <div class="cap">center frequency · log axis · drag on plot to scrub</div>
     </div>
     <div class="ctl">
+      <div class="lab"><b>X SPAN</b><output id="oX">full</output></div>
+      <div class="seg" id="segX">
+        <button data-s="0" class="on">Full<small>range</small></button>
+        <button data-s="2">2 OCT</button>
+        <button data-s="0.5">½ OCT</button>
+        <button data-s="0.125">⅛ OCT</button>
+      </div>
+      <div class="cap">frequency window around Fc · both panels share it · pans while scrubbing</div>
+    </div>
+    <div class="ctl">
       <div class="lab"><b>GAIN</b><output id="oG"></output></div>
       <input type="range" id="rG" min="-60" max="36" step="0.1" aria-label="gain">
       <div class="cap" id="cG"></div>
@@ -130,6 +140,8 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
       <b>NOTCH</b> = bell design with Gain 1e-6 (−120 dB) and BW×10⁻³. A bell's BW
       parameter is the width at half depth (−60 dB here), so ×1/√gain maps the
       control to the notch's −3 dB bandwidth (drawn on the plot).<br>
+      <b>PHASE</b> of a bell is a bounded antisymmetric bump (≈0° at Fc); its peak
+      scales with gain — see min/max readout in the phase panel.<br>
       design: cookBiquadVoxengo — A. Vaneev / Voxengo, MIT.
     </div>
   </aside>
@@ -184,17 +196,31 @@ const btOf=t=>t===1?BT_BPF:BT_PEQ;
 const NOTCH_GAIN=1e-6, NOTCH_BW_K=1e-3;             // Gain=1e-6 · BW×1e-3
 
 /* ================= 2 · state ================= */
-const ui={type:0,freq:1000,gainDB:6,bw:1.0,fs:48000};
+const ui={type:0,freq:1000,gainDB:6,bw:1.0,fs:48000,span:0};
 /* chased ("displayed") state — the curve morphs by easing these toward ui targets */
 const ch={logF:Math.log2(140),gdb:-16,logBW:Math.log2(2.6),fs:48000,mix:1,tA:0,tB:0};
 const rng={mLo:-24,mHi:12,pLo:-90,pHi:45};
 const FMIN=15, fmaxOf=()=>ui.fs*0.4995;
 
+/* visible frequency window (log), centered on the chased Fc */
+let xLo=10,xHi=24000,xlLo=Math.log(10),xlHi=Math.log(24000);
+function xWindow(){
+  const fmax=ch.fs*0.49995,L0=Math.log2(10),L1=Math.log2(fmax);
+  if(!ui.span)return[10,fmax];
+  const h=ui.span/2;let lo=ch.logF-h,hi=ch.logF+h;
+  if(lo<L0){hi+=L0-lo;lo=L0;}
+  if(hi>L1){lo=Math.max(L0,lo-(hi-L1));hi=L1;}
+  return[Math.pow(2,lo),Math.pow(2,hi)];
+}
+/* adaptive phase scale: nice steps 0.5°…180°, ~7 gridlines max */
+const PSTEP=[0.5,1,2,5,10,15,30,45,90,180];
+const nicePStep=s=>PSTEP.find(p=>s/p<=7)||180;
+
 /* ================= 3 · response sampling ================= */
 const NPTS=900,MAXP=NPTS+26;
 const F=new Float64Array(MAXP),db=new Float64Array(MAXP),ph=new Float64Array(MAXP);
 const dA=new Float64Array(MAXP),pA=new Float64Array(MAXP),dBf=new Float64Array(MAXP),pBf=new Float64Array(MAXP);
-let nF=0,curCA=null,curCB=null,curBlend=1,fAnchor=1000;
+let nF=0,curCA=null,curCB=null,curBlend=1,fAnchor=1000,phMn=0,phMx=0;
 
 function unwrap(a,n){ /* continuous (unwrapped) phase along the sweep */
   for(let i=1;i<n;i++){
@@ -212,6 +238,8 @@ function evalAt(c,cw,c2,sw,s2){
 }
 function computeCurves(){
   const fs=ch.fs, fC=Math.pow(2,ch.logF);
+  const[wlo,whi]=xWindow();
+  xLo=wlo;xHi=whi;xlLo=Math.log(xLo);xlHi=Math.log(xHi);
   /* Notch = deep bell: exact substitution once the morph animation settles */
   const nb=ui.bw*NOTCH_BW_K;
   const settled=ui.type===2&&Math.abs(ch.gdb+120)<0.02&&Math.abs(ch.logBW-Math.log2(nb))<0.002;
@@ -221,20 +249,19 @@ function computeCurves(){
   curCB=cookBiquadVoxengo(btB,fs,fC,gLin,bw);
   curBlend=(btA!==btB&&ch.mix<0.999)?ch.mix:1;
   curCA=curBlend<1?cookBiquadVoxengo(btA,fs,fC,gLin,bw):null;
-  const fmax=fs*0.49995, l0=Math.log(10), l1=Math.log(fmax);
-  nF=NPTS;
-  for(let i=0;i<NPTS;i++)F[i]=Math.exp(l0+(l1-l0)*i/(NPTS-1));
+  nF=NPTS;                                          /* log-uniform across the window */
+  for(let i=0;i<NPTS;i++)F[i]=Math.exp(xlLo+(xlHi-xlLo)*i/(NPTS-1));
   /* exact anchor at the center + log-spaced extra samples across the design
      bandwidth, so narrow bells and the deep notch core are always resolved */
   const n0=nF;
-  fAnchor=Math.min(Math.max(fC,10),fmax);
+  fAnchor=Math.min(Math.max(fC,xLo),xHi);
   F[nF++]=fAnchor;
   const fr=ui.type===2
     ?[8,4,2,1,0.5,0.25,0.125,0.0625,0.03125,0.0078125,0.001953125]
     :[0.5,0.25,0.125,0.0625];
   for(const s of fr){
-    F[nF++]=Math.min(Math.max(fC*Math.pow(2,-bw*s),10),fmax);
-    F[nF++]=Math.min(Math.max(fC*Math.pow(2, bw*s),10),fmax);
+    F[nF++]=Math.min(Math.max(fC*Math.pow(2,-bw*s),xLo),xHi);
+    F[nF++]=Math.min(Math.max(fC*Math.pow(2, bw*s),xLo),xHi);
   }
   for(let k=n0;k<nF;k++){const v=F[k];let j=k-1;
     while(j>=0&&F[j]>v){F[j+1]=F[j];j--;}F[j+1]=v;}
@@ -293,24 +320,34 @@ function chase(dt){
   let mLo=Math.floor((mn-7)/12)*12,mHi=Math.ceil((mx+7)/12)*12;
   while(mHi-mx>10.8)mHi-=12;while(mn-mLo>10.8)mLo+=12;
   if(mHi-mLo<12){mHi+=6;mLo-=6;}
-  let pLo=Math.floor((pn-15)/45)*45,pHi=Math.ceil((px+15)/45)*45;
-  while(pHi-px>40.5)pHi-=45;while(pn-pLo>40.5)pLo+=45;
-  if(pHi-pLo<45){pHi+=22.5;pLo-=22.5;}
   move(rng,'mLo',mLo,kr);move(rng,'mHi',mHi,kr);
-  move(rng,'pLo',pLo,kr);move(rng,'pHi',pHi,kr);
+  /* phase: nice-step quantization fitted to the measured bump — never flattens it */
+  const pspan=Math.max(px-pn,1);
+  const pst=PSTEP.find(p=>pspan*1.3/p<=7)||180;
+  move(rng,'pLo',Math.floor((pn-pspan*0.1)/pst)*pst,kr);
+  move(rng,'pHi',Math.ceil((px+pspan*0.1)/pst)*pst,kr);
+  phMn=pn;phMx=px;
 }
 
 /* ================= 5 · main plot ================= */
 const plot=$('#plot'),pg=plot.getContext('2d');
 function geoOf(w,h){
   const PL=56,PR=18,PT=26,PB=26,GAP=16;
-  const pw=w-PL-PR,av=h-PT-PB-GAP,mH=av*0.62;
+  const pw=w-PL-PR,av=h-PT-PB-GAP,mH=av*0.5;      /* equal halves: phase gets real estate */
   return{PL,pw,PT,mTop:PT,mBot:PT+mH,pTop:PT+mH+GAP,pBot:PT+mH+GAP+(av-mH)};
 }
 function fmtHz(f){
   if(f>=10000)return (f/1000).toFixed(1)+' kHz';
   if(f>=1000)return (f/1000).toFixed(2)+' kHz';
   return f>=100?f.toFixed(0)+' Hz':f.toFixed(1)+' Hz';
+}
+function tickLbl(f,precise){
+  if(f>=1000){
+    const k=f/1000;
+    const s=precise?k.toFixed(2):String(k);
+    return s.replace(/\.0+$|(\.\d[1-9]?)0+$/,'$1')+'k';
+  }
+  return precise?String(Math.round(f)):String(f);
 }
 function drawPlot(){
   const rect=plot.getBoundingClientRect(),dpr=devicePixelRatio||1;
@@ -319,8 +356,7 @@ function drawPlot(){
   const g=pg;g.setTransform(dpr,0,0,dpr,0,0);
   const w=rect.width,h=rect.height;g.clearRect(0,0,w,h);
   const G=geoOf(w,h),PL=G.PL,pw=G.pw,mTop=G.mTop,mBot=G.mBot,pTop=G.pTop,pBot=G.pBot;
-  const lmin=Math.log(10),lmax=Math.log(ch.fs*0.49995),fsHalf=ch.fs*0.49995;
-  const xF=f=>PL+(Math.log(Math.min(Math.max(f,10),fsHalf))-lmin)/(lmax-lmin)*pw;
+  const xF=f=>PL+(Math.log(Math.min(Math.max(f,xLo),xHi))-xlLo)/(xlHi-xlLo)*pw;
   const yM=v=>mBot-(0.04+(v-rng.mLo)/(rng.mHi-rng.mLo)*0.92)*(mBot-mTop);
   const yP=v=>pBot-(0.04+(v-rng.pLo)/(rng.pHi-rng.pLo)*0.92)*(pBot-pTop);
   g.lineWidth=1;
@@ -332,28 +368,35 @@ function drawPlot(){
     g.fillStyle=z?COL.mut:COL.dim;
     g.fillText(v>0?'+'+Math.round(v):v<0?'\u2212'+(-Math.round(v)):'0',PL-8,y);
   }
-  /* phase grid */
-  for(let v=Math.ceil(rng.pLo/45)*45;v<=rng.pHi+0.01;v+=45){
-    const y=Math.round(yP(v))+0.5,z=Math.abs(v)<0.001;
+  /* phase grid — step matches the current (eased) range */
+  const pst=nicePStep(rng.pHi-rng.pLo),pdec=pst<1?1:0;
+  for(let v=Math.ceil(rng.pLo/pst-1e-9)*pst;v<=rng.pHi+1e-9;v+=pst){
+    const y=Math.round(yP(v))+0.5,z=Math.abs(v)<pst*0.25;
     g.strokeStyle=z?COL.grid0:COL.grid;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+pw,y);g.stroke();
     g.fillStyle=z?COL.mut:COL.dim;
-    g.fillText((v>0?'+':v<0?'\u2212':'')+Math.round(v)+'\u00b0',PL-8,y);
+    g.fillText((z?'0':(v>0?'+':'\u2212')+(pdec?Math.abs(v).toFixed(1):Math.round(Math.abs(v))))+'\u00b0',PL-8,y);
   }
-  /* vertical log grid + decade labels */
+  /* vertical log grid + 1·1.5·2·5 tick labels within the window */
   g.textAlign='center';g.textBaseline='alphabetic';
-  for(let e=1;;e++){
-    const base=Math.pow(10,e);if(base>fsHalf)break;
-    for(let m=1;m<10;m++){
-      const f=base*m;if(f>fsHalf)break;
-      const x=Math.round(xF(f))+0.5,mj=m===1;
-      g.strokeStyle=mj?COL.grid:COL.gridMin;
-      g.beginPath();g.moveTo(x,mTop);g.lineTo(x,mBot);g.stroke();
-      g.beginPath();g.moveTo(x,pTop);g.lineTo(x,pBot);g.stroke();
-      if(mj){g.fillStyle=COL.dim;g.fillText(f>=1000?(f/1000)+'k':''+f,x,pBot+16);}
+  const MS=[1,1.5,2,3,4,5,6,7,8,9];
+  const e0=Math.floor(Math.log10(xLo)),e1=Math.ceil(Math.log10(xHi)),ticks=[];
+  for(let e=e0;e<=e1;e++){
+    const base=Math.pow(10,e);
+    for(const m of MS){
+      const f=base*m;
+      if(f<xLo*1.0001)continue;
+      if(f>xHi)break;
+      ticks.push({f,mj:m===1||m===1.5||m===2||m===5});
     }
   }
-  g.textAlign='right';g.fillStyle=COL.dim;
-  g.fillText(fsHalf>=10000?(fsHalf/1000).toFixed(0)+'k':(fsHalf/1000).toFixed(1)+'k',PL+pw,pBot+16);
+  const nMaj=ticks.reduce((a,t)=>a+(t.mj?1:0),0);
+  for(const t of ticks){
+    const x=Math.round(xF(t.f))+0.5;
+    g.strokeStyle=t.mj?COL.grid:COL.gridMin;
+    g.beginPath();g.moveTo(x,mTop);g.lineTo(x,mBot);g.stroke();
+    g.beginPath();g.moveTo(x,pTop);g.lineTo(x,pBot);g.stroke();
+    if(t.mj||nMaj<4){g.fillStyle=COL.dim;g.fillText(tickLbl(t.f,!t.mj),x,pBot+16);}
+  }
   /* frames + titles */
   g.strokeStyle=COL.frame;
   g.strokeRect(PL+0.5,mTop+0.5,pw-1,mBot-mTop-1);
@@ -364,6 +407,7 @@ function drawPlot(){
   g.fillText('PHASE / deg',PL+10,pTop+16);
   g.letterSpacing='0px';
   /* live readout at cursor (or marker) */
+  const pdec2=(rng.pHi-rng.pLo)<20?2:1;
   const rf=hover.on?hover.f:fAnchor;
   const smp=sampleCurve(rf);
   if(smp){
@@ -372,8 +416,11 @@ function drawPlot(){
     g.fillStyle=COL.dim;g.fillText(ft,PL+pw-10,mTop+16);
     g.fillStyle=COL.amber;g.fillText(fm(smp.db,2)+' dB  ',PL+pw-10-tw,mTop+16);
     g.fillStyle=COL.dim;g.fillText(ft,PL+pw-10,pTop+16);
-    g.fillStyle=COL.teal;g.fillText(fm(smp.ph,1)+'\u00b0  ',PL+pw-10-tw,pTop+16);
+    g.fillStyle=COL.teal;g.fillText(fm(smp.ph,pdec2)+'\u00b0  ',PL+pw-10-tw,pTop+16);
   }
+  /* measured phase excursion — always visible, independent of hover */
+  g.font='400 9px "IBM Plex Mono",monospace';g.textAlign='right';g.fillStyle=COL.dim;
+  g.fillText('min '+fm(phMn,pdec2)+'\u00b0 \u00b7 max +'+fm(phMx,pdec2)+'\u00b0',PL+pw-10,pTop+28);
   /* magnitude curve */
   g.save();g.beginPath();g.rect(PL,mTop,pw,mBot-mTop);g.clip();
   const pm=new Path2D();
@@ -386,7 +433,7 @@ function drawPlot(){
   g.save();g.beginPath();g.rect(PL,pTop,pw,pBot-pTop);g.clip();
   const pp=new Path2D();
   for(let i=0;i<nF;i++){const x=xF(F[i]),y=yP(ph[i]);i?pp.lineTo(x,y):pp.moveTo(x,y);}
-  g.strokeStyle=COL.teal;g.lineWidth=1.4;g.lineJoin='round';g.stroke(pp);
+  g.strokeStyle=COL.teal;g.lineWidth=1.6;g.lineJoin='round';g.stroke(pp);
   g.restore();
   /* measured design-bandwidth bracket: bell = width @ ½ gain · BPF/notch = −3 dB */
   if(curBlend>0.999){
@@ -545,6 +592,12 @@ rB.addEventListener('input',()=>{ui.bw=+rB.value;fill(rB);oB.textContent=ui.bw.t
 selFS.addEventListener('change',()=>{ui.fs=+selFS.value;$('#oS').textContent=(ui.fs/1000)+' kHz';
   ui.freq=Math.min(ui.freq,fmaxOf());syncFreq();});
  $('#seg').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>setType(+b.dataset.t)));
+ $('#segX').querySelectorAll('button').forEach(b=>b.addEventListener('click',()=>{
+  ui.span=parseFloat(b.dataset.s);
+  $('#segX').querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
+  const h=ui.span/2;
+  $('#oX').textContent=ui.span?(h>=1?'\u00b1'+h+' oct':h===0.25?'\u00b1\u00bc oct':'\u00b11/'+Math.round(1/h)+' oct'):'full';
+}));
 
 const PRE=[
   {n:'HUM NOTCH',t:2,f:50,g:6,bw:2.0},
@@ -566,7 +619,7 @@ const hover={on:false,f:1000};let drag=false;
 function xAt(e){
   const r=plot.getBoundingClientRect(),G=geoOf(r.width,r.height);
   const t=((e.clientX-r.left)-G.PL)/G.pw;
-  return Math.exp(Math.log(10)+t*(Math.log(ch.fs*0.49995)-Math.log(10)));
+  return Math.exp(xlLo+t*(xlHi-xlLo));
 }
 const setFreq=f=>{ui.freq=Math.min(Math.max(f,FMIN),fmaxOf());syncFreq();};
 plot.addEventListener('pointerdown',e=>{drag=true;plot.setPointerCapture(e.pointerId);
