@@ -181,31 +181,31 @@ function cookBiquadVoxengo(type,SampleRate,Freq,Gain,BW){
   if(Fp<1e-9)Fp=1e-9;else if(Fp>0.4999999)Fp=0.4999999;
   const Fb=Fp*Math.pow(0.5,BW*0.5);
   const r=(Fp*Fp-Fb*Fb)/(2.0*Fb*(0.25-Fp*Fp));
-  const y=r*r;
-  let gn,g0,gb,gp,v;
+  const y=Math.pow(r,2.0);
+  let gn,g0,gb,gp,v2;
   if(type===BT_PEQ){
     if(Math.abs(Gain-1.0)<1e-9)return{a0:1,a1:0,a2:0,b0:1,b1:0,b2:0};
     gn=(1.0+Gain*y)/(1.0+y/Gain);
     g0=1.0;gb=Gain;gp=Gain*Gain;
-    v=Math.sqrt(Gain/(Gain+y));
+    v2=Gain/(Gain+y);
   }else{
     gn=y/(1.0+y);
     g0=0.0;gb=0.5;gp=1.0;
-    v=1.0/Math.sqrt(1.0+y);
+    v2=1.0/(1.0+y);
   }
   let xp=Math.tan(Math.PI*Fp);xp*=xp;
   let xb=Math.tan(Math.PI*Fb);xb*=xb;
-  const w=xp*v, Gc=Math.sqrt(gn);
-  g0*=w;
-  let t=w-xp,u=g0-Gc*xp;
+  const w=xp*Math.sqrt(v2), Gn=Math.sqrt(gn);
+  const G0w=Math.sqrt(g0)*w;
+  let t=w-xp,u=G0w-Gn*xp;
   const r1=(gp*t*t-u*u)/xp;
-  t=w-xb;u=g0-Gc*xb;
+  t=w-xb;u=G0w-Gn*xb;
   const r2=(gb*t*t-u*u)/xb;
   const den=gb-gp;
   const A=Math.sqrt(Math.max((r1-r2)/den,0));       // max(,0): numerical guard only
   const B=Math.sqrt(Math.max((gb*r1-gp*r2)/den,0));
   return{a0:1.0+w+A,a1:2.0*(w-1.0),a2:1.0+w-A,
-         b0:Gc+g0+B,b1:2.0*(g0-Gc),b2:Gc+g0-B};
+         b0:Gn+G0w+B,b1:2.0*(G0w-Gn),b2:Gn+G0w-B};
 }
 const btOf=t=>t===1?BT_BPF:BT_PEQ;
 const NOTCH_GAIN=1e-6, NOTCH_BW_K=1e-3;             // Gain=1e-6 · BW×1e-3

@@ -1,6 +1,8 @@
 /**
  * @file biquad_voxengo.h
  *
+ * @version 1.1
+ *
  * @brief Perfect biquad filter design code.
  *
  * Email: aleksey.vaneev@gmail.com or info@voxengo.com
@@ -34,7 +36,7 @@
 #include <math.h>
 
 typedef struct {
-    double a0, a1, a2, b0, b1, b2;
+    double b0, b1, b2, a0, a1, a2;
 } biquad_t;
 
 enum biquadType { BT_PEQ = 0, BT_BPF };
@@ -54,8 +56,8 @@ enum biquadType { BT_PEQ = 0, BT_BPF };
 static inline void cookBiquadVoxengo( const int type, const double SampleRate,
     const double Freq, const double Gain, const double BW, biquad_t* const f )
 {
-    double Fp, Fb, xp, xb, y, v, w, r1, r2, den, A2, B2, A, B;
-    double g0, gb, gp, gn, Gc, r, t, u;
+    double Fp, Fb, xp, xb, y, v2, w, r1, r2, den, A2, B2, A, B;
+    double g0, gb, gp, gn, G0w, Gn, r, t, u;
 
     // ---- normalized frequencies (tan blows up without clamp) ----
     Fp = Freq / SampleRate;
@@ -79,7 +81,7 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
         g0 = 1.0;
         gb = Gain;
         gp = Gain * Gain;
-        v = sqrt( Gain / ( Gain + y ));
+        v2 = Gain / ( Gain + y );
     }
     else
     {
@@ -87,7 +89,7 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
         g0 = 0.0;
         gb = 0.5;
         gp = 1.0;
-        v = 1.0 / sqrt( 1.0 + y );
+        v2 = 1.0 / ( 1.0 + y );
     }
 
     // ---- warped frequency axis ----
@@ -95,17 +97,15 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
     xp = tan( C_PI * Fp ); xp *= xp;
     xb = tan( C_PI * Fb ); xb *= xb;
 
-    w = xp * v;
-    Gc = sqrt( gn );
-    g0 *= w;
+    w = xp * sqrt( v2 );
+    Gn = sqrt( gn );
+    G0w = sqrt( g0 ) * w;
 
     // ---- 2x2 linear solve for A^2, B^2 ----
-    t = w - xp;
-    u = g0 - Gc*xp;
+    t = w - xp; u = G0w - Gn*xp;
     r1 = ( gp*t*t - u*u ) / xp;
 
-    t = w - xb;
-    u = g0 - Gc*xb;
+    t = w - xb; u = G0w - Gn*xb;
     r2 = ( gb*t*t - u*u ) / xb;
 
     den = gb - gp;
@@ -120,9 +120,9 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
     f->a0 = 1.0 + w + A;
     f->a1 = 2.0 * ( w - 1.0 );
     f->a2 = 1.0 + w - A;
-    f->b0 = Gc + g0 + B;
-    f->b1 = 2.0 * ( g0 - Gc );
-    f->b2 = Gc + g0 - B;
+    f->b0 = Gn + G0w + B;
+    f->b1 = 2.0 * ( G0w - Gn );
+    f->b2 = Gn + G0w - B;
 }
 
 #endif // BIQUAD_VOXENGO
