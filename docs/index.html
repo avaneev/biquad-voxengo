@@ -31,7 +31,11 @@ main{flex:1;display:flex;min-height:0}
 #stage{flex:1;min-width:0;display:flex;flex-direction:column}
 #wrap{flex:1;position:relative;min-height:340px}
 #plot{position:absolute;inset:0;width:100%;height:100%;display:block;cursor:crosshair;touch-action:none}
-#coef{display:flex;align-items:baseline;gap:16px 20px;flex-wrap:wrap;padding:10px 22px;border-top:1px solid var(--line);font:400 11px var(--mono)}
+/* fixed-height, never-wrapping readout bar: content changes slide horizontally
+   but the height is constant, so the plot area never resizes/jitters */
+#coef{flex:none;display:flex;flex-direction:column;justify-content:center;gap:4px;height:54px;padding:8px 22px 9px;border-top:1px solid var(--line);font:400 11px var(--mono)}
+#coef .row{display:flex;align-items:baseline;gap:6px 18px;white-space:nowrap;overflow:hidden}
+#coef .row>*{flex:none}
 #coef i{font-style:normal;color:var(--dim);margin-right:6px}
 #coef b{font-weight:500;color:var(--ink)}
 #coef .mk{color:var(--dim);font-size:9px;letter-spacing:.14em;text-transform:uppercase}
@@ -104,7 +108,7 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
         <button data-s="0.5">½ OCT</button>
         <button data-s="0.125">⅛ OCT</button>
       </div>
-      <div class="cap">frequency window around Fc · both panels share it · pans while scrubbing</div>
+      <div class="cap">always centered on Fc · response ends at fs/2, area beyond is shaded</div>
     </div>
     <div class="ctl">
       <div class="lab"><b>GAIN</b><output id="oG"></output></div>
@@ -147,7 +151,10 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
   </aside>
   <section id="stage">
     <div id="wrap"><canvas id="plot"></canvas></div>
-    <div id="coef"></div>
+    <div id="coef">
+      <div class="row" id="coefRow"></div>
+      <div class="row"><span class="mk">coefficients · a0-normalized</span><span class="meta" id="coefMeta"></span></div>
+    </div>
   </section>
 </main>
 
@@ -202,19 +209,28 @@ const ch={logF:Math.log2(140),gdb:-16,logBW:Math.log2(2.6),fs:48000,mix:1,tA:0,t
 const rng={mLo:-24,mHi:12,pLo:-90,pHi:45};
 const FMIN=15, fmaxOf=()=>ui.fs*0.4995;
 
-/* visible frequency window (log), centered on the chased Fc */
+/* visible frequency window (log). Zoom modes are exactly centered on the chased
+   Fc — the right edge may extend beyond Nyquist, where no data is drawn. */
 let xLo=10,xHi=24000,xlLo=Math.log(10),xlHi=Math.log(24000);
 function xWindow(){
-  const fmax=ch.fs*0.49995,L0=Math.log2(10),L1=Math.log2(fmax);
+  const fmax=ch.fs*0.49995;
   if(!ui.span)return[10,fmax];
-  const h=ui.span/2;let lo=ch.logF-h,hi=ch.logF+h;
-  if(lo<L0){hi+=L0-lo;lo=L0;}
-  if(hi>L1){lo=Math.max(L0,lo-(hi-L1));hi=L1;}
-  return[Math.pow(2,lo),Math.pow(2,hi)];
+  const h=ui.span/2,fC=Math.pow(2,ch.logF);
+  return[fC*Math.pow(2,-h),fC*Math.pow(2,h)];
 }
-/* adaptive phase scale: nice steps 0.5°…180°, ~7 gridlines max */
-const PSTEP=[0.5,1,2,5,10,15,30,45,90,180];
-const nicePStep=s=>PSTEP.find(p=>s/p<=7)||180;
+/* nice gridline steps; the WINDOW is smooth (proportional to the data), only
+   the gridlines snap — so the axis can never hunt between two quantized ranges */
+const PSTEP=[0.1,0.25,0.5,1,2,5,10,15,30,45,90,180];
+const MSTEP=[0.5,1,2,3,6,12,24,48];
+/* sticky step choice: refine only when the current step is badly oversized,
+   coarsen only when the data no longer fits — no density flicker */
+function stickyStep(cur,span,steps,maxN){
+  const fit=steps.find(s=>span/s<=maxN)||steps[steps.length-1];
+  if(cur&&fit>cur)return fit;
+  if(cur&&fit<cur&&span/cur<=maxN*0.45)return fit;
+  return cur||fit;
+}
+const grid={ms:0,ps:0};
 
 /* ================= 3 · response sampling ================= */
 const NPTS=900,MAXP=NPTS+26;
@@ -240,6 +256,7 @@ function computeCurves(){
   const fs=ch.fs, fC=Math.pow(2,ch.logF);
   const[wlo,whi]=xWindow();
   xLo=wlo;xHi=whi;xlLo=Math.log(xLo);xlHi=Math.log(xHi);
+  const fmaxD=fs*0.49995, xcap=Math.min(xHi,fmaxD);
   /* Notch = deep bell: exact substitution once the morph animation settles */
   const nb=ui.bw*NOTCH_BW_K;
   const settled=ui.type===2&&Math.abs(ch.gdb+120)<0.02&&Math.abs(ch.logBW-Math.log2(nb))<0.002;
@@ -249,19 +266,21 @@ function computeCurves(){
   curCB=cookBiquadVoxengo(btB,fs,fC,gLin,bw);
   curBlend=(btA!==btB&&ch.mix<0.999)?ch.mix:1;
   curCA=curBlend<1?cookBiquadVoxengo(btA,fs,fC,gLin,bw):null;
+  const lHi=Math.min(xlHi,Math.log(fmaxD));         /* no data beyond Nyquist */
   nF=NPTS;                                          /* log-uniform across the window */
-  for(let i=0;i<NPTS;i++)F[i]=Math.exp(xlLo+(xlHi-xlLo)*i/(NPTS-1));
-  /* exact anchor at the center + log-spaced extra samples across the design
-     bandwidth, so narrow bells and the deep notch core are always resolved */
+  for(let i=0;i<NPTS;i++)F[i]=Math.exp(xlLo+(lHi-xlLo)*i/(NPTS-1));
+  /* exact anchor at the center + dense log-spaced samples across the design
+     bandwidth (down to ~1/90 of BW) so true magnitude/phase peaks are measured,
+     not missed by the coarse sweep grid */
   const n0=nF;
-  fAnchor=Math.min(Math.max(fC,xLo),xHi);
+  fAnchor=Math.min(Math.max(fC,xLo),xcap);
   F[nF++]=fAnchor;
   const fr=ui.type===2
     ?[8,4,2,1,0.5,0.25,0.125,0.0625,0.03125,0.0078125,0.001953125]
-    :[0.5,0.25,0.125,0.0625];
+    :[0.5,0.35,0.25,0.18,0.125,0.09,0.0625,0.044,0.031,0.022,0.016,0.011];
   for(const s of fr){
-    F[nF++]=Math.min(Math.max(fC*Math.pow(2,-bw*s),xLo),xHi);
-    F[nF++]=Math.min(Math.max(fC*Math.pow(2, bw*s),xLo),xHi);
+    F[nF++]=Math.min(Math.max(fC*Math.pow(2,-bw*s),xLo),xcap);
+    F[nF++]=Math.min(Math.max(fC*Math.pow(2, bw*s),xLo),xcap);
   }
   for(let k=n0;k<nF;k++){const v=F[k];let j=k-1;
     while(j>=0&&F[j]>v){F[j+1]=F[j];j--;}F[j+1]=v;}
@@ -317,15 +336,24 @@ function chase(dt){
   let mn=1e9,mx=-1e9,pn=1e9,px=-1e9;
   for(let i=0;i<nF;i++){const a=db[i],b=ph[i];
     if(a<mn)mn=a;if(a>mx)mx=a;if(b<pn)pn=b;if(b>px)px=b;}
-  let mLo=Math.floor((mn-7)/12)*12,mHi=Math.ceil((mx+7)/12)*12;
-  while(mHi-mx>10.8)mHi-=12;while(mn-mLo>10.8)mLo+=12;
-  if(mHi-mLo<12){mHi+=6;mLo-=6;}
-  move(rng,'mLo',mLo,kr);move(rng,'mHi',mHi,kr);
-  /* phase: nice-step quantization fitted to the measured bump — never flattens it */
-  const pspan=Math.max(px-pn,1);
-  const pst=PSTEP.find(p=>pspan*1.3/p<=7)||180;
-  move(rng,'pLo',Math.floor((pn-pspan*0.1)/pst)*pst,kr);
-  move(rng,'pHi',Math.ceil((px+pspan*0.1)/pst)*pst,kr);
+  /* magnitude: smooth window hugging the data — pads proportional to the span,
+     slightly heavier below (skirts) than above; edges never quantize → no snapping */
+  const mspan=Math.max(mx-mn,0.5);
+  move(rng,'mLo',mn-Math.max(mspan*0.10,0.4),kr);
+  move(rng,'mHi',mx+Math.max(mspan*0.045,0.25),kr);
+  /* phase: smooth window. Bell bumps are antisymmetric → symmetric ±1.18×peak
+     frame; otherwise proportional padding (BPF/notch sweeps). The window tracks
+     the measured peak continuously, so it can never flap between two ranges. */
+  const pspan=Math.max(px-pn,0.8);
+  let pLoT,pHiT;
+  if(pn<0&&px>0&&(-pn)<px*3+1e-9&&px<(-pn)*3+1e-9){
+    const sym=Math.max(-pn,px)*1.18;
+    pLoT=-sym;pHiT=sym;
+  }else{
+    pLoT=pn-pspan*0.12;pHiT=px+pspan*0.12;
+  }
+  move(rng,'pLo',pLoT,kr);
+  move(rng,'pHi',pHiT,kr);
   phMn=pn;phMx=px;
 }
 
@@ -356,27 +384,29 @@ function drawPlot(){
   const g=pg;g.setTransform(dpr,0,0,dpr,0,0);
   const w=rect.width,h=rect.height;g.clearRect(0,0,w,h);
   const G=geoOf(w,h),PL=G.PL,pw=G.pw,mTop=G.mTop,mBot=G.mBot,pTop=G.pTop,pBot=G.pBot;
+  const fmaxD=ch.fs*0.49995;
   const xF=f=>PL+(Math.log(Math.min(Math.max(f,xLo),xHi))-xlLo)/(xlHi-xlLo)*pw;
   const yM=v=>mBot-(0.04+(v-rng.mLo)/(rng.mHi-rng.mLo)*0.92)*(mBot-mTop);
   const yP=v=>pBot-(0.04+(v-rng.pLo)/(rng.pHi-rng.pLo)*0.92)*(pBot-pTop);
   g.lineWidth=1;
-  /* magnitude grid */
+  /* magnitude grid — sticky nice step over the smooth window */
   g.font='500 9.5px "IBM Plex Mono",monospace';g.textAlign='right';g.textBaseline='middle';
-  for(let v=Math.ceil(rng.mLo/12)*12;v<=rng.mHi+0.01;v+=12){
-    const y=Math.round(yM(v))+0.5,z=Math.abs(v)<0.001;
+  const mst=grid.ms=stickyStep(grid.ms,rng.mHi-rng.mLo,MSTEP,8),mdec=mst<1?1:0;
+  for(let k=Math.ceil(rng.mLo/mst-1e-9);k*mst<=rng.mHi+1e-9;k++){
+    const v=k*mst,y=Math.round(yM(v))+0.5,z=k===0;
     g.strokeStyle=z?COL.grid0:COL.grid;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+pw,y);g.stroke();
     g.fillStyle=z?COL.mut:COL.dim;
-    g.fillText(v>0?'+'+Math.round(v):v<0?'\u2212'+(-Math.round(v)):'0',PL-8,y);
+    g.fillText((v>0?'+':v<0?'\u2212':'')+Math.abs(v).toFixed(mdec),PL-8,y);
   }
-  /* phase grid — step matches the current (eased) range */
-  const pst=nicePStep(rng.pHi-rng.pLo),pdec=pst<1?1:0;
+  /* phase grid — sticky nice step over the smooth window */
+  const pst=grid.ps=stickyStep(grid.ps,rng.pHi-rng.pLo,PSTEP,7),pdec=pst<1?1:0;
   for(let v=Math.ceil(rng.pLo/pst-1e-9)*pst;v<=rng.pHi+1e-9;v+=pst){
     const y=Math.round(yP(v))+0.5,z=Math.abs(v)<pst*0.25;
     g.strokeStyle=z?COL.grid0:COL.grid;g.beginPath();g.moveTo(PL,y);g.lineTo(PL+pw,y);g.stroke();
     g.fillStyle=z?COL.mut:COL.dim;
     g.fillText((z?'0':(v>0?'+':'\u2212')+(pdec?Math.abs(v).toFixed(1):Math.round(Math.abs(v))))+'\u00b0',PL-8,y);
   }
-  /* vertical log grid + 1·1.5·2·5 tick labels within the window */
+  /* vertical log grid + 1·1.5·2·5 tick labels within the window (data side only) */
   g.textAlign='center';g.textBaseline='alphabetic';
   const MS=[1,1.5,2,3,4,5,6,7,8,9];
   const e0=Math.floor(Math.log10(xLo)),e1=Math.ceil(Math.log10(xHi)),ticks=[];
@@ -385,7 +415,7 @@ function drawPlot(){
     for(const m of MS){
       const f=base*m;
       if(f<xLo*1.0001)continue;
-      if(f>xHi)break;
+      if(f>xHi||f>fmaxD)break;
       ticks.push({f,mj:m===1||m===1.5||m===2||m===5});
     }
   }
@@ -397,6 +427,11 @@ function drawPlot(){
     g.beginPath();g.moveTo(x,pTop);g.lineTo(x,pBot);g.stroke();
     if(t.mj||nMaj<4){g.fillStyle=COL.dim;g.fillText(tickLbl(t.f,!t.mj),x,pBot+16);}
   }
+  /* right-edge label only when the edge actually is the spectrum limit */
+  if(xHi<=fmaxD*1.001){
+    g.textAlign='right';g.fillStyle=COL.dim;
+    g.fillText(fmaxD>=10000?(fmaxD/1000).toFixed(0)+'k':(fmaxD/1000).toFixed(1)+'k',PL+pw,pBot+16);
+  }
   /* frames + titles */
   g.strokeStyle=COL.frame;
   g.strokeRect(PL+0.5,mTop+0.5,pw-1,mBot-mTop-1);
@@ -406,10 +441,29 @@ function drawPlot(){
   g.fillText('MAGNITUDE / dB',PL+10,mTop+16);
   g.fillText('PHASE / deg',PL+10,pTop+16);
   g.letterSpacing='0px';
-  /* live readout at cursor (or marker) */
+  /* dead zone beyond Nyquist: shaded, bounded, labeled — window stays centered */
+  const xn=xF(fmaxD);
+  if(xHi>fmaxD*1.0005&&xn<PL+pw-2){
+    const sw=PL+pw-xn;
+    g.fillStyle='rgba(0,0,0,0.30)';
+    g.fillRect(xn,mTop,sw,mBot-mTop);
+    g.fillRect(xn,pTop,sw,pBot-pTop);
+    g.strokeStyle='rgba(237,230,214,0.22)';g.setLineDash([4,3]);
+    g.beginPath();g.moveTo(Math.round(xn)+0.5,mTop);g.lineTo(Math.round(xn)+0.5,pBot);g.stroke();
+    g.setLineDash([]);
+    g.font='500 9px "IBM Plex Mono",monospace';g.textAlign='right';g.fillStyle=COL.dim;
+    g.fillText('fs/2',xn-5,pBot+16);
+    if(sw>44){
+      g.save();g.translate(xn+sw/2,(mTop+pBot)/2);g.rotate(-Math.PI/2);
+      g.textAlign='center';g.textBaseline='middle';g.letterSpacing='2px';
+      g.fillText('ABOVE NYQUIST \u00b7 NO SPECTRUM',0,0);
+      g.letterSpacing='0px';g.restore();
+    }
+  }
+  /* live readout at cursor (or marker) — only where data exists */
   const pdec2=(rng.pHi-rng.pLo)<20?2:1;
   const rf=hover.on?hover.f:fAnchor;
-  const smp=sampleCurve(rf);
+  const smp=rf<=fmaxD*1.0005?sampleCurve(rf):null;
   if(smp){
     g.font='500 10.5px "IBM Plex Mono",monospace';g.textAlign='right';
     const ft=fmtHz(rf),tw=g.measureText(ft).width;
@@ -533,28 +587,29 @@ function buildCall(){
     '<span class="ca">'+ui.fs+'</span>, <span class="ca">'+ui.freq.toFixed(1)+'</span>, '+
     '<span class="ca">'+gs+'</span>, <span class="ca">'+bs+'</span>)';
 }
-function buildCoef(){
+function buildCoefRow(){
   const c=curCB;if(!c)return'';
   const fc=v=>(v<0?'\u2212':'+')+Math.abs(v).toFixed(6);
-  const n=v=>v/c.a0, eff=Math.pow(2,ch.logBW), fC=fAnchor;
-  let s='<span class="mk">coefficients · a0-normalized</span>';
+  const n=v=>v/c.a0;
+  let s='';
   [['b0',n(c.b0)],['b1',n(c.b1)],['b2',n(c.b2)],['a0',1],['a1',n(c.a1)],['a2',n(c.a2)]]
     .forEach(p=>{s+='<span><i>'+p[0]+'</i><b>'+fc(p[1])+'</b></span>';});
-  let meta;
-  if(ui.type===2){ /* notch: Q from the −3 dB control bandwidth */
-    const Q=1/(2*Math.sinh(Math.LN2*ui.bw/2));
-    meta='depth \u2212120.0 dB \u00b7 Q \u2248 '+(Q>=100?Math.round(Q):Q.toFixed(2));
-  }else{
-    const Q=1/(2*Math.sinh(Math.LN2*eff/2));
-    meta='Q \u2248 '+(Q>=100?Math.round(Q):Q.toFixed(2))+' \u00b7 Fb '+fmtHz(fC*Math.pow(0.5,eff/2));
-  }
-  s+='<span class="meta">'+meta+'</span>';
   return s;
 }
-let lastCall='',lastCoef='';
+function buildMeta(){
+  const fC=fAnchor, eff=Math.pow(2,ch.logBW);
+  if(ui.type===2){ /* notch: Q from the −3 dB control bandwidth */
+    const Q=1/(2*Math.sinh(Math.LN2*ui.bw/2));
+    return 'depth \u2212120.0 dB \u00b7 Q \u2248 '+(Q>=100?Math.round(Q):Q.toFixed(2));
+  }
+  const Q=1/(2*Math.sinh(Math.LN2*eff/2));
+  return 'Q \u2248 '+(Q>=100?Math.round(Q):Q.toFixed(2))+' \u00b7 Fb '+fmtHz(fC*Math.pow(0.5,eff/2));
+}
+let lastCall='',lastRow='',lastMeta='';
 function updateTexts(){
   const c=buildCall();if(c!==lastCall){lastCall=c;$('#call').innerHTML=c;}
-  const cc=buildCoef();if(cc!==lastCoef){lastCoef=cc;$('#coef').innerHTML=cc;}
+  const r=buildCoefRow();if(r!==lastRow){lastRow=r;$('#coefRow').innerHTML=r;}
+  const m=buildMeta();if(m!==lastMeta){lastMeta=m;$('#coefMeta').innerHTML=m;}
 }
 
 /* ================= 8 · controls ================= */
@@ -636,8 +691,11 @@ function frame(now){
   chase(dt);computeCurves();drawPlot();drawZ();updateTexts();
   requestAnimationFrame(frame);
 }
+/* initialize slider positions from state before first paint */
+rG.value=String(ui.gainDB);rB.value=String(ui.bw);
 syncFreq();fill(rG);fill(rB);
-oB.textContent='1.00 oct';setType(0,true);
+oB.textContent=ui.bw.toFixed(2)+' oct';
+setType(0,true);
 requestAnimationFrame(frame);
 </script>
 </body>
