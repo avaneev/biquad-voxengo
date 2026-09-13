@@ -1,7 +1,7 @@
 /**
  * @file biquad_voxengo.h
  *
- * @version 1.2
+ * @version 1.3
  *
  * @brief Perfect biquad filter design code.
  *
@@ -59,7 +59,10 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
     double Fp, Fb, xp, xb, y, v2, w, r1, r2, den, A2, B2, A, B;
     double g0, gb, gp, gn, G0w, Gn, r, t, u;
 
+    // The analog prototype is H(s) = (Gn*s^2 + B*s + G0*w)/(s^2 + A*s + w).
+
     // ---- normalized frequencies (tan blows up without clamp) ----
+    // This permits use of normalized substitution s=(z-1)/(z+1) in BLT.
     Fp = Freq / SampleRate;
     if( Fp < 1e-9 ) Fp = 1e-9; else if( Fp > 0.4999999 ) Fp = 0.4999999;
     Fb = Fp * pow( 0.5, BW * 0.5 );
