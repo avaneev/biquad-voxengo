@@ -1,7 +1,7 @@
 /**
  * @file biquad_voxengo.h
  *
- * @version 1.1
+ * @version 1.2
  *
  * @brief Perfect biquad filter design code.
  *
@@ -64,8 +64,13 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
     if( Fp < 1e-9 ) Fp = 1e-9; else if( Fp > 0.4999999 ) Fp = 0.4999999;
     Fb = Fp * pow( 0.5, BW * 0.5 );
 
-    // ---- octave-bandwidth parameter ----
-    r = ( Fp*Fp - Fb*Fb ) / ( 2.0 * Fb * ( 0.25 - Fp*Fp ));
+    // ---- normalized band-edge detuning ----
+    // r = 1 exactly when the octave band's upper edge reaches Nyquist.
+    // y = r^2 is the response-skew DOF: it fixes the Nyquist anchor gain.
+    // `rs` is a shift parameter with 2.0 yielding an intended design;
+    // 1.7 shifts Gn and produces a better analog prototype match.
+    const double rs = 2.0;
+    r = ( Fp*Fp - Fb*Fb ) / ( rs * Fb * ( 0.25 - Fp*Fp ));
     y = r * r;
 
     // ---- family anchors, squared gains ----
@@ -81,7 +86,7 @@ static inline void cookBiquadVoxengo( const int type, const double SampleRate,
         g0 = 1.0;
         gb = Gain;
         gp = Gain * Gain;
-        v2 = Gain / ( Gain + y );
+        v2 = Gain / ( Gain + y ); // ( gp - gn ) / ( gp - g0 ) equivalent.
     }
     else
     {
