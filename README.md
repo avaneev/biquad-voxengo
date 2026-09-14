@@ -33,6 +33,45 @@ int main()
 ```
 
 When integrating this design code into your code make sure you are correctly
-treating the `a` and `b` coefficients. By convention introduced in the RBJ
-cookbook, `b` coefficients are `H(z)`'s numerator while `a` coefficients are
+treating the `a` and `b` coefficients. By common convention used in the RBJ cookbook
+and elsewhere, `b` coefficients are `H(z)`'s numerator while `a` coefficients are
 its denominator.
+
+## Linear 2x2 Solver
+
+For a target squared gain $g$ at warped frequency $x$, the prototype
+
+$$
+H(s)=\frac{G_n s^2 + B s + G_0 w}{s^2 + A s + w}
+$$
+
+evaluated on the bilinear-transformed frequency axis gives
+
+$$
+|H|^2 =
+\frac{(G_0w-G_n x)^2 + B^2 x}
+     {(w-x)^2 + A^2 x}.
+$$
+
+Setting $|H|^2=g$ gives a linear equation in $A^2,B^2$:
+
+$$
+B^2 - g A^2 =
+\frac{g(w-x)^2-(G_0w-G_n x)^2}{x}.
+$$
+
+The code applies this at two points:
+
+$$
+B^2 - g_p A^2 = r_1,
+\qquad
+B^2 - g_b A^2 = r_2.
+$$
+
+So the “solver” is just Cramer/elimination:
+
+$$
+A^2=\frac{r_1-r_2}{g_b-g_p},
+\qquad
+B^2=\frac{g_b r_1-g_p r_2}{g_b-g_p}.
+$$
