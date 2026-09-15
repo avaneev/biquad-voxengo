@@ -15,8 +15,7 @@ Vaneev, and refined by other frontier AI models (it was a time-consuming and
 costly process).
 
 The filters were verified in an actual equalizer plugin for correctness and
-stability. A notch filter can be designed as a "deep" bell filter, with the
-`Gain` parameter set to `1e-6` and `BW` multiplied by `1e-3`.
+stability. A notch filter is calculated directly via the same prototype.
 
 [Explore the design in your browser](https://avaneev.github.io/biquad-voxengo/)
 

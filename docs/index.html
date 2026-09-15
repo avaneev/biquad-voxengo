@@ -81,7 +81,7 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
 <header>
   <div>
     <h1>PERFECT BIQUAD<span> / LAB</span></h1>
-    <div class="sub">magnitude · phase · pole-zero — live response of cookBiquadVoxengo()</div>
+    <div class="sub">magnitude · phase · pole-zero — live response of cookBiquadVoxengo() v1.5</div>
   </div>
   <div class="call" id="call"></div>
 </header>
@@ -92,23 +92,13 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
       <div class="seg" id="seg">
         <button data-t="0" class="on">Bell<small>peaking eq</small></button>
         <button data-t="1">Band-pass<small>2nd order</small></button>
-        <button data-t="2">Notch<small>deep bell</small></button>
+        <button data-t="2">Notch<small>true notch</small></button>
       </div>
     </div>
     <div class="ctl">
       <div class="lab"><b>FREQUENCY</b><output id="oF"></output></div>
       <input type="range" id="rF" min="0" max="1" step="0.0002" aria-label="center frequency">
       <div class="cap">center frequency · log axis · drag on plot to scrub</div>
-    </div>
-    <div class="ctl">
-      <div class="lab"><b>X SPAN</b><output id="oX">full</output></div>
-      <div class="seg" id="segX">
-        <button data-s="0" class="on">Full<small>range</small></button>
-        <button data-s="2">2 OCT</button>
-        <button data-s="0.5">½ OCT</button>
-        <button data-s="0.125">⅛ OCT</button>
-      </div>
-      <div class="cap">always centered on Fc · response ends at fs/2, area beyond is shaded</div>
     </div>
     <div class="ctl">
       <div class="lab"><b>GAIN</b><output id="oG"></output></div>
@@ -119,6 +109,16 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
       <div class="lab"><b>BANDWIDTH</b><output id="oB"></output></div>
       <input type="range" id="rB" min="0.05" max="6" step="0.01" aria-label="bandwidth">
       <div class="cap" id="cB"></div>
+    </div>
+    <div class="ctl">
+      <div class="lab"><b>X SPAN</b><output id="oX">full</output></div>
+      <div class="seg" id="segX">
+        <button data-s="0" class="on">Full<small>range</small></button>
+        <button data-s="2">2 OCT</button>
+        <button data-s="0.5">½ OCT</button>
+        <button data-s="0.125">⅛ OCT</button>
+      </div>
+      <div class="cap">always centered on Fc · response ends at fs/2, area beyond is shaded</div>
     </div>
     <div class="ctl">
       <div class="lab"><b>SAMPLE RATE</b><output id="oS">48 kHz</output></div>
@@ -141,14 +141,12 @@ select{width:100%;padding:8px 10px;background:var(--bg2);border:1px solid var(--
       <div class="cap">poles × · zeros ○ · circle |z| = 1</div>
     </div>
     <div class="foot">
-      <b>NOTCH</b> = bell design with Gain 1e-6 (−120 dB) and BW×10⁻³. A bell's BW
-      parameter is the width at half depth (−60 dB here), so ×1/√gain maps the
-      control to the notch's −3 dB bandwidth (drawn on the plot).<br>
-      <b>COMPARE</b> · all three designs use the same recipe — for the notch too
-      (Gain 1e-6, BW×1e-3). ANALOG = s-domain prototype H_a(j2πf), bandlimited to
-      fs/2. RBJ = Audio EQ Cookbook biquad, A=√G, Q=1/(2·sinh(ln2·BW/2)); its BW
-      convention (½-dB-gain width) matches the design's. Differences visible in
-      the overlay are pure design error (bilinear warp near Nyquist). Dashed.
+      <b>NOTCH</b> = true notch (BT_NOTCH): gain ignored, BW = width @ −3 dB;
+      the null reaches −∞, magnitude display is floored at −90 dB.<br>
+      <b>COMPARE</b> · same recipe for all three designs, notch included —
+      ANALOG = (s²+ω₀²)/(s²+(ω₀/Q)s+ω₀²), RBJ = cookbook true-zero notch,
+      Q = 1/(2·sinh(ln2·BW/2)). Differences visible in the overlay are pure
+      design error (bilinear warp near Nyquist). Dashed.
     </div>
   </aside>
   <section id="stage">
@@ -174,70 +172,108 @@ const fm=(v,d)=>{
   return s[0]==='-'?'\u2212'+s.slice(1):s;
 };
 
-/* ================= 1 · filter design — faithful JS port of cookBiquadVoxengo ================= */
-const BT_PEQ=0, BT_BPF=1;
+/* ============ 1 · filter design — faithful JS port of cookBiquadVoxengo v1.5 ============ */
+const BT_PEQ=0, BT_BPF=1, BT_NOTCH=2;
 function cookBiquadVoxengo(type,SampleRate,Freq,Gain,BW){
-  let Fp=Freq/SampleRate;
-  if(Fp<1e-9)Fp=1e-9;else if(Fp>0.4999999)Fp=0.4999999;
-  const Fb=Fp*Math.pow(0.5,BW*0.5);
-  const r=(Fp*Fp-Fb*Fb)/(2.0*Fb*(0.25-Fp*Fp));
-  const y=Math.pow(r,2.0);
-  let gn,g0,gb,gp,v2;
-  if(type===BT_PEQ){
-    if(Math.abs(Gain-1.0)<1e-9)return{a0:1,a1:0,a2:0,b0:1,b1:0,b2:0};
-    gn=(1.0+Gain*y)/(1.0+y/Gain);
-    g0=1.0;gb=Gain;gp=Gain*Gain;
-    v2=Gain/(Gain+y);
-  }else{
-    gn=y/(1.0+y);
-    g0=0.0;gb=0.5;gp=1.0;
-    v2=1.0/(1.0+y);
-  }
-  let xp=Math.tan(Math.PI*Fp);xp*=xp;
-  let xb=Math.tan(Math.PI*Fb);xb*=xb;
-  const w=xp*Math.sqrt(v2), Gn=Math.sqrt(gn);
-  const G0w=Math.sqrt(g0)*w;
-  let t=w-xp,u=G0w-Gn*xp;
-  const r1=(gp*t*t-u*u)/xp;
-  t=w-xb;u=G0w-Gn*xb;
-  const r2=(gb*t*t-u*u)/xb;
-  const den=gb-gp;
-  const A=Math.sqrt(Math.max((r1-r2)/den,0));       // max(,0): numerical guard only
-  const B=Math.sqrt(Math.max((gb*r1-gp*r2)/den,0));
-  return{a0:1.0+w+A,a1:2.0*(w-1.0),a2:1.0+w-A,
-         b0:Gn+G0w+B,b1:2.0*(G0w-Gn),b2:Gn+G0w-B};
-}
-const btOf=t=>t===1?BT_BPF:BT_PEQ;
-const NOTCH_GAIN=1e-6, NOTCH_BW_K=1e-3;             // Gain=1e-6 · BW×1e-3
+  let Fp,Fp2,Fb,xp,xb,y,v2,w,r1,r2,A2,B2,A,B,sa,sb;
+  let gb,gp,gn,G0w,Gn,r,t,u;
 
-/* ---- comparison references (apples to apples: the notch is a deep bell in
-   every design — Gain=1e-6, BW×1e-3; no true-zero notch is compared) --------
-   kind: 0 bell (also serves the notch) · 1 band-pass                        */
+  // The analog prototype is H(s) = (Gn*s^2 + B*s + G0*w)/(s^2 + A*s + w),
+  // with `w` corresponding to warped Fp^2.
+
+  // ---- normalized frequencies (tan blows up without clamp) ----
+  Fp=Freq/SampleRate;
+  if(Fp<1e-9)Fp=1e-9;else if(Fp>0.4999999)Fp=0.4999999;
+  Fb=Fp*Math.exp(-0.34657359027997265*BW); // pow(0.5,BW*0.5)
+
+  // ---- normalized band-edge detuning ----
+  // r = 1 exactly when the octave band's upper edge reaches Nyquist.
+  // y = r^2 is the response-skew DOF: it fixes the Nyquist anchor gain.
+  const rs=2.0;
+  Fp2=Fp*Fp;
+  r=(Fp2-Fb*Fb)/(rs*Fb*(0.25-Fp2));
+  y=r*r;
+
+  // ---- warped frequency axis ----
+  xp=Math.tan(Math.PI*Fp);xp*=xp;
+  xb=Math.tan(Math.PI*Fb);xb*=xb;
+
+  // ---- family anchors, squared gains ----
+  if(type===BT_PEQ){
+    if(Math.abs(Gain-1.0)<1e-9)return{b0:1,b1:0,b2:0,a0:1,a1:0,a2:0};
+    v2=Gain/(Gain+y);              // ( gp-gn )/( gp-g0 ) equivalent
+    gn=(1.0+Gain*y)*v2;
+    gb=Gain;gp=Gain*Gain;
+    w=xp*Math.sqrt(v2);
+    G0w=w;                         // assumes g0=1 (=sqrt(g0)*w)
+  }else if(type===BT_BPF){
+    v2=1.0/(1.0+y);
+    gn=y*v2;
+    gb=0.5;gp=1.0;
+    w=xp*Math.sqrt(v2);
+    G0w=0.0;                       // assumes g0=0
+  }else{                           // BT_NOTCH
+    v2=1.0/(1.0+y);
+    gn=v2;
+    gb=0.5;gp=0.0;
+    w=xp*Math.sqrt(v2);
+    G0w=w;
+  }
+
+  Gn=Math.sqrt(gn);
+
+  // ---- 2x2 linear solve for A^2, B^2 ----
+  t=w-xp;u=G0w-Gn*xp;
+  r1=(gp*t*t-u*u)/xp;
+  t=w-xb;u=G0w-Gn*xb;
+  r2=(gb*t*t-u*u)/xb;
+  A2=(r1-r2)/(gb-gp);
+  B2=r2+gb*A2;                     // substitution, simpler than elimination
+  A=Math.sqrt(Math.max(A2,0));     // max(,0): numerical guard only
+  B=Math.sqrt(Math.max(B2,0));
+
+  // ---- emit biquad ----
+  sa=1.0+w;sb=Gn+G0w;
+  return{b0:sb+B,b1:2.0*(G0w-Gn),b2:sb-B,
+         a0:sa+A,a1:2.0*(w-1.0),a2:sa-A};
+}
+const btOf=t=>t===1?BT_BPF:t===2?BT_NOTCH:BT_PEQ;
+
+/* Magnitude display floor: the notch's null reaches −∞, so every magnitude
+   evaluation clamps at −90 dB — the dip renders pinned at the floor instead of
+   dragging the autoscale toward −300. MFLR+0.5 is the unwrap's singular-sample
+   mask: only clamped (null-core) samples sit below it. */
+const MFLR=-90,MFLR_LIN=Math.pow(10,MFLR/20);
+
+/* ---- comparison references (same recipe in all designs, notch included) ---
+   kind: 0 bell · 1 band-pass · 2 true-zero notch                            */
 function evalAnalog(kind,f,fC,G,bw){                 /* H_a(j2πf), bandlimited ref */
   const w=2*Math.PI*f, w0=2*Math.PI*fC;
   let nr,ni,dr,di;
   if(kind===1){                                      /* (ω0/Q)s / (s²+(ω0/Q)s+ω0²) */
     const bp=w0*2*Math.sinh(Math.LN2*bw/2)*w;        /* ω0/Q = ω0·2·sinh(ln2·BW/2) */
     nr=0;ni=bp;dr=w0*w0-w*w;di=bp;
+  }else if(kind===2){                                /* (s²+ω0²) / (s²+(ω0/Q)s+ω0²) */
+    const d1=w0*2*Math.sinh(Math.LN2*bw/2)*w;        /* −3 dB octave width, as BT_NOTCH */
+    nr=w0*w0-w*w;ni=0;dr=nr;di=d1;
   }else{                                             /* bell: Qz=Qp/G, half-depth width BW */
     const Qp=Math.pow(2,bw*0.5)*Math.sqrt(G)/(Math.pow(2,bw)-1);
     const cz=w0*w0-w*w;
     nr=cz;ni=(w0*G/Qp)*w;dr=cz;di=(w0/Qp)*w;         /* 1/Qz = G/Qp */
   }
-  return[20*Math.log10(Math.max(Math.sqrt((nr*nr+ni*ni)/(dr*dr+di*di)),1e-9)),
-         Math.atan2(ni,nr)-Math.atan2(di,dr)];
+  const mg=Math.max(Math.sqrt((nr*nr+ni*ni)/(dr*dr+di*di)),MFLR_LIN);
+  return[20*Math.log10(mg),Math.atan2(ni,nr)-Math.atan2(di,dr)];
 }
 function rbjCoeffs(kind,fC,G,bw,fs){                 /* Audio EQ Cookbook */
   const w0=2*Math.PI*Math.min(fC/fs,0.4999999);
-  const Q=1/(2*Math.sinh(Math.LN2*bw/2));            /* ½-dB-gain octave width —
-                                                        matches the design's BW convention */
+  const Q=1/(2*Math.sinh(Math.LN2*bw/2));            /* matches the design's BW convention */
   const cs=Math.cos(w0), al=Math.sin(w0)/(2*Q);
-  if(kind===0){                                      /* peaking EQ, A=√G — also the
-                                                        notch: G=1e-6, BW×1e-3 */
+  if(kind===0){                                      /* peaking EQ, A=√G */
     const A=Math.sqrt(G);
     return{b0:1+al*A,b1:-2*cs,b2:1-al*A,a0:1+al/A,a1:-2*cs,a2:1-al/A};
   }
-  return{b0:al,b1:0,b2:-al,a0:1+al,a1:-2*cs,a2:1-al};/* BPF, 0 dB peak */
+  if(kind===1)return{b0:al,b1:0,b2:-al,a0:1+al,a1:-2*cs,a2:1-al}; /* BPF, 0 dB peak */
+  return{b0:1,b1:-2*cs,b2:1,a0:1+al,a1:-2*cs,a2:1-al}; /* notch: true-zero numerator */
 }
 
 /* ================= 2 · state ================= */
@@ -279,10 +315,13 @@ const dA=new Float64Array(MAXP),pA=new Float64Array(MAXP),dBf=new Float64Array(M
 const cdb=new Float64Array(MAXP),cph=new Float64Array(MAXP);      /* compare curves */
 let nF=0,curCA=null,curCB=null,curBlend=1,fAnchor=1000,phMn=0,phMx=0,cmpOn=false;
 
-/* Null-aware phase unwrap. No compared design has a true unit-circle zero
-   anymore (floors sit at −120 dB), so the singular-sample path is now a
-   no-op — retained as cheap robustness against numerical deep dips. */
-const NULL_DB=-150;
+/* Null-aware phase unwrap. The notch's zero sits ON the unit circle: the sample
+   at Fc is atan2(±ε,±ε) garbage, and the true −180° step between its neighbors
+   measures as −180.0x°, exceeding the ±π wrap threshold. Samples at/below the
+   −90 dB display floor (only null cores get there) are masked out of the unwrap
+   and back-filled by interpolation; segments dipping below −60 dB get a relaxed
+   1.7π threshold so the legit −180° step keeps its sign. */
+const NULL_DB=MFLR+0.5;
 function unwrap(dbA,phA,n){
   let f0=-1,l0=-1;
   for(let i=0;i<n;i++)if(dbA[i]>NULL_DB){if(f0<0)f0=i;l0=i;}
@@ -308,36 +347,30 @@ function unwrap(dbA,phA,n){
 function evalAt(c,cw,c2,sw,s2){
   const nr=c.b0+c.b1*cw+c.b2*c2, ni=-(c.b1*sw+c.b2*s2);
   const dr=c.a0+c.a1*cw+c.a2*c2, di=-(c.a1*sw+c.a2*s2);
-  return[20*Math.log10(Math.max(Math.sqrt((nr*nr+ni*ni)/(dr*dr+di*di)),1e-9)),
-         Math.atan2(ni,nr)-Math.atan2(di,dr)];
+  const mg=Math.max(Math.sqrt((nr*nr+ni*ni)/(dr*dr+di*di)),MFLR_LIN);
+  return[20*Math.log10(mg),Math.atan2(ni,nr)-Math.atan2(di,dr)];
 }
 function computeCurves(){
   const fs=ch.fs, fC=Math.pow(2,ch.logF);
   const[wlo,whi]=xWindow();
   xLo=wlo;xHi=whi;xlLo=Math.log(xLo);xlHi=Math.log(xHi);
   const fmaxD=fs*0.49995, xcap=Math.min(xHi,fmaxD);
-  /* Notch = deep bell: exact substitution once the morph animation settles */
-  const nb=ui.bw*NOTCH_BW_K;
-  const settled=ui.type===2&&Math.abs(ch.gdb+120)<0.02&&Math.abs(ch.logBW-Math.log2(nb))<0.002;
-  const gLin=settled?NOTCH_GAIN:Math.pow(10,ch.gdb/20);
-  const bw=settled?nb:Math.pow(2,ch.logBW);
+  const gLin=Math.pow(10,ch.gdb/20);
+  const bw=Math.pow(2,ch.logBW);
   const btA=btOf(ch.tA), btB=btOf(ch.tB);
-  curCB=cookBiquadVoxengo(btB,fs,fC,gLin,bw);
+  curCB=cookBiquadVoxengo(btB,fs,fC,gLin,bw);     /* notch: type 2, gain ignored */
   curBlend=(btA!==btB&&ch.mix<0.999)?ch.mix:1;
   curCA=curBlend<1?cookBiquadVoxengo(btA,fs,fC,gLin,bw):null;
   const lHi=Math.min(xlHi,Math.log(fmaxD));         /* no data beyond Nyquist */
   nF=NPTS;                                          /* log-uniform across the window */
   for(let i=0;i<NPTS;i++)F[i]=Math.exp(xlLo+(lHi-xlLo)*i/(NPTS-1));
   /* exact anchor at the center + dense log-spaced samples across the design
-     bandwidth (down to ~1/90 of BW) so true magnitude/phase peaks are measured,
-     not missed by the coarse sweep grid */
+     bandwidth (down to ~1/90 of BW) so true magnitude/phase peaks — and the
+     notch's null walls — are resolved by the sweep grid */
   const n0=nF;
   fAnchor=Math.min(Math.max(fC,xLo),xcap);
   F[nF++]=fAnchor;
-  const fr=ui.type===2
-    ?[8,4,2,1,0.5,0.25,0.125,0.0625,0.03125,0.0078125,0.001953125]
-    :[0.5,0.35,0.25,0.18,0.125,0.09,0.0625,0.044,0.031,0.022,0.016,0.011];
-  for(const s of fr){
+  for(const s of[0.5,0.35,0.25,0.18,0.125,0.09,0.0625,0.044,0.031,0.022,0.016,0.011]){
     F[nF++]=Math.min(Math.max(fC*Math.pow(2,-bw*s),xLo),xcap);
     F[nF++]=Math.min(Math.max(fC*Math.pow(2, bw*s),xLo),xcap);
   }
@@ -356,11 +389,10 @@ function computeCurves(){
     for(let i=0;i<nF;i++){db[i]=dA[i]+(dBf[i]-dA[i])*mix;ph[i]=pA[i]+(pBf[i]-pA[i])*mix;}
   }else unwrap(db,ph,nF);
   /* ---- comparison reference on the same grid, same chased parameters.
-     Identical recipe in every design: kind 0 (bell) serves the notch with
-     G=1e-6, BW×1e-3 — the exact parameters the main curve was designed with. */
+     The notch is designed directly in every reference too (true zero). */
   cmpOn=ui.cmp!==0;
   if(cmpOn){
-    const kind=btB===BT_BPF?1:0;
+    const kind=btB===BT_BPF?1:btB===BT_NOTCH?2:0;
     const cc=ui.cmp===2?rbjCoeffs(kind,fC,gLin,bw,fs):null;
     for(let i=0;i<nF;i++){
       const r=ui.cmp===1
@@ -423,17 +455,16 @@ function move(o,k,t,kk){const d=t-o[k];if(Math.abs(d)<1e-4)o[k]=t;else o[k]+=d*k
 function chase(dt){
   const k=1-Math.exp(-dt*13),km=1-Math.exp(-dt*7),kr=1-Math.exp(-dt*9);
   move(ch,'logF',Math.log2(Math.min(Math.max(ui.freq,12),ui.fs*0.4999)),k);
-  const gT=ui.type===0?ui.gainDB:ui.type===2?-120:ch.gdb; /* notch depth sinks to −120 dB */
-  move(ch,'gdb',gT,k);
-  move(ch,'logBW',Math.log2(ui.bw*(ui.type===2?NOTCH_BW_K:1)),k); /* notch: BW ×1e-3 */
+  move(ch,'gdb',ui.gainDB,k);                 /* notch/BPF ignore gain in design */
+  move(ch,'logBW',Math.log2(ui.bw),k);        /* BW used as-is by every type */
   move(ch,'fs',ui.fs,k);
   move(ch,'mix',1,km);
   if(!nF)return;
   let mn=1e9,mx=-1e9,pn=1e9,px=-1e9;
   for(let i=0;i<nF;i++){const a=db[i],b=ph[i];
     if(a<mn)mn=a;if(a>mx)mx=a;if(b<pn)pn=b;if(b>px)px=b;}
-  if(cmpOn){ /* let the reference curve widen the frame, but keep a −120 dB floor
-                from stretching the magnitude axis without bound */
+  if(cmpOn){ /* let the reference curve widen the frame; magnitudes are already
+                floored at −90 dB, so a null cannot stretch the axis */
     let mnC=1e9,mxC=-1e9,pnC=1e9,pxC=-1e9;
     for(let i=0;i<nF;i++){const a=cdb[i],b=cph[i];
       if(a<mnC)mnC=a;if(a>mxC)mxC=a;if(b<pnC)pnC=b;if(b>pxC)pxC=b;}
@@ -756,14 +787,11 @@ function drawZ(){
 
 /* ================= 7 · text readouts ================= */
 function buildCall(){
-  const tn=ui.type===1?'BT_BPF':'BT_PEQ';
-  let gs,bs;
-  if(ui.type===2){gs='1e-06';bs=(ui.bw*NOTCH_BW_K).toExponential(1);}
-  else if(ui.type===1){gs='1.0';bs=ui.bw.toFixed(2);}
-  else{gs=Math.pow(10,ui.gainDB/20).toFixed(4);bs=ui.bw.toFixed(2);}
+  const tn=ui.type===1?'BT_BPF':ui.type===2?'BT_NOTCH':'BT_PEQ';
+  const gs=ui.type===0?Math.pow(10,ui.gainDB/20).toFixed(4):'1.0';
   return '<span class="cf">cookBiquadVoxengo</span>(<span class="ct">'+tn+'</span>, '+
     '<span class="ca">'+ui.fs+'</span>, <span class="ca">'+ui.freq.toFixed(1)+'</span>, '+
-    '<span class="ca">'+gs+'</span>, <span class="ca">'+bs+'</span>)';
+    '<span class="ca">'+gs+'</span>, <span class="ca">'+ui.bw.toFixed(2)+'</span>)';
 }
 function buildCoefRow(){
   const c=curCB;if(!c)return'';
@@ -775,13 +803,11 @@ function buildCoefRow(){
   return s;
 }
 function buildMeta(){
-  const fC=fAnchor, eff=Math.pow(2,ch.logBW);
-  if(ui.type===2){ /* notch: Q from the −3 dB control bandwidth */
-    const Q=1/(2*Math.sinh(Math.LN2*ui.bw/2));
-    return 'depth \u2212120.0 dB \u00b7 Q \u2248 '+(Q>=100?Math.round(Q):Q.toFixed(2));
-  }
+  const eff=Math.pow(2,ch.logBW);
   const Q=1/(2*Math.sinh(Math.LN2*eff/2));
-  return 'Q \u2248 '+(Q>=100?Math.round(Q):Q.toFixed(2))+' \u00b7 Fb '+fmtHz(fC*Math.pow(0.5,eff/2));
+  const qs=Q>=100?Math.round(Q):Q.toFixed(2);
+  if(ui.type===2)return 'Q \u2248 '+qs+' \u00b7 width @ \u22123 dB \u00b7 null \u2212\u221e';
+  return 'Q \u2248 '+qs+' \u00b7 Fb '+fmtHz(fAnchor*Math.pow(0.5,eff/2));
 }
 let lastCall='',lastRow='',lastMeta='';
 function updateTexts(){
@@ -800,13 +826,10 @@ function syncFreq(){
 }
 function bwCap(){
   const Q=1/(2*Math.sinh(Math.LN2*ui.bw/2)),qs=Q>=100?Math.round(Q):Q.toFixed(2);
-  if(ui.type===2)
-    cBc.textContent='control = \u22123 dB width \u00b7 design BW '
-      +(ui.bw*NOTCH_BW_K).toExponential(1)+' oct @ \u221260 dB \u00b7 Q \u2248 '+qs;
-  else if(ui.type===1)
-    cBc.textContent='Q \u2248 '+Q.toFixed(3)+' \u00b7 BW = width @ \u22123 dB';
-  else
+  if(ui.type===0)
     cBc.textContent='Q \u2248 '+Q.toFixed(3)+' \u00b7 BW = width @ \u00bd gain';
+  else
+    cBc.textContent='Q \u2248 '+qs+' \u00b7 BW = width @ \u22123 dB';
 }
 function setType(t,force){
   if(ui.type===t&&!force)return;
@@ -814,9 +837,9 @@ function setType(t,force){
   if(changed){ch.tA=ch.mix<0.5?ch.tA:ch.tB;ch.tB=t;ch.mix=0;}
   $('#seg').querySelectorAll('button').forEach(b=>b.classList.toggle('on',+b.dataset.t===t));
   rG.disabled=t!==0;
-  oG.textContent=t===2?'\u2212120.0 dB':t===1?'\u2014':ui.gainDB.toFixed(1)+' dB';
+  oG.textContent=t===0?ui.gainDB.toFixed(1)+' dB':'\u2014';
   cG.textContent=t===1?'ignored for band-pass'
-    :t===2?'locked \u00b7 1e-6 linear (\u2212120 dB)':'applied exactly at Freq';
+    :t===2?'ignored for notch':'applied exactly at Freq';
   bwCap();
 }
 rF.addEventListener('input',()=>{ui.freq=FMIN*Math.pow(fmaxOf()/FMIN,+rF.value);fill(rF);oF.textContent=fmtHz(ui.freq);});
@@ -833,7 +856,7 @@ selFS.addEventListener('change',()=>{ui.fs=+selFS.value;$('#oS').textContent=(ui
 }));
 
 const PRE=[
-  {n:'HUM NOTCH',t:2,f:50,g:6,bw:2.0},
+  {n:'HUM NOTCH',t:2,f:50,g:6,bw:0.1},
   {n:'PRESENCE',t:0,f:3500,g:4.5,bw:1.2},
   {n:'BAND 1K',t:1,f:1000,g:6,bw:0.7}];
 PRE.forEach(p=>{
